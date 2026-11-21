@@ -1,0 +1,11 @@
+{
+  "gate": [{"has_change": true, "reason": "States two new requirements."}],
+  "extract": [
+    {"ops": [
+      {"op": "add", "text": "The export must support CSV.", "category": "Functional",
+       "evidence": "the export must support CSV"},
+      {"op": "add", "text": "Reports must load in under 2 seconds.", "category": "non-functional",
+       "evidence": "Reports should load in under 2 seconds"}
+    ]}
+  ]
+}

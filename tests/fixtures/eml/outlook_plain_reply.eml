@@ -1,0 +1,21 @@
+From: Raj Patel <raj@acme.com>
+To: Sam Lee <sam@ourstudio.io>
+Subject: RE: Atlas login
+Date: Sat, 21 Nov 2026 10:00:00 +0000
+Message-ID: <outlook-001@acme.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Login must support SSO via Okta.
+
+Regards,
+Raj
+
+________________________________
+From: Sam Lee <sam@ourstudio.io>
+Sent: Friday, November 20, 2026 4:00 PM
+To: Raj Patel <raj@acme.com>
+Subject: Atlas login
+
+Which identity provider should login use? Passwords only for now?

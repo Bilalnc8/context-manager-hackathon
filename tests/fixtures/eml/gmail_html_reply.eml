@@ -1,0 +1,15 @@
+From: Jane Doe <jane@acme.com>
+To: Sam Lee <sam@ourstudio.io>
+Subject: Re: Atlas dashboard
+Date: Sat, 21 Nov 2026 09:00:00 +0000
+Message-ID: <html-001@acme.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<div dir="ltr"><div>The dashboard must show&nbsp;<b>weekly</b>
+  totals.</div><div><br></div><div class="gmail_signature" data-smartmail="gmail_signature">Jane Doe | Acme</div></div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">On Fri, Nov 20, 2026 Sam wrote:<br></div><blockquote class="gmail_quote" style="margin:0 0 0 .8ex">Should the dashboard show daily totals?</blockquote></div>
+--b1--

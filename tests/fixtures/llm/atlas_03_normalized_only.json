@@ -1,0 +1,9 @@
+{
+  "gate": [{"has_change": true, "reason": "Mentions CSV export."}],
+  "extract": [
+    {"ops": [
+      {"op": "modify", "req_id": "REQ-001", "text": "the export must support csv",
+       "evidence": "we need CSV export for Atlas"}
+    ]}
+  ]
+}

@@ -1,0 +1,16 @@
+From: Raj Patel <raj@acme.com>
+To: Sam Lee <sam@ourstudio.io>
+Subject: RE: Atlas audit
+Date: Sat, 21 Nov 2026 11:00:00 +0000
+Message-ID: <outlook-002@acme.com>
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<html><head><style>p {margin:0}</style></head><body>
+<div><p>Audit logs must be kept for 90 days.</p></div>
+<div id="appendonsend"></div>
+<hr style="display:inline-block;width:98%">
+<div id="divRplyFwdMsg"><b>From:</b> Sam Lee<br><b>Sent:</b> Friday<br><b>Subject:</b> Atlas audit</div>
+<div><p>How long should audit logs be kept? 30 days?</p></div>
+</body></html>

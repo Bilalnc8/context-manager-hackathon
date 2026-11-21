@@ -1,0 +1,10 @@
+{
+  "gate": [{"has_change": true, "reason": "Gate false positive: re-states the CSV requirement."}],
+  "extract": [
+    {"ops": [
+      {"op": "add", "text": "The export must support CSV.", "category": "functional",
+       "evidence": "For Atlas, the export must support CSV."}
+    ]},
+    {"ops": [{"op": "none", "reason": "Acknowledgement only."}]}
+  ]
+}

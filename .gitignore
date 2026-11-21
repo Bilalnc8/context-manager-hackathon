@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+build/
+dist/
+
+# Local state
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Secrets: OAuth client credentials, tokens, API keys
+credentials*.json
+client_secret*.json
+token*.json
+*.token
+.secrets/
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/

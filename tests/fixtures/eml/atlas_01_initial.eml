@@ -1,0 +1,17 @@
+From: Jane Doe <jane@acme.com>
+To: Dev Team <team@ourstudio.io>
+Subject: Atlas export requirements
+Date: Mon, 16 Nov 2026 09:00:00 +0000
+Message-ID: <atlas-001@acme.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Hi team,
+
+For Atlas, the export must support CSV. Reports should load in under 2 seconds.
+
+Thanks,
+Jane Doe
+Product Lead, Acme
++1 555 0100

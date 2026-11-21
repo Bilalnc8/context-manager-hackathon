@@ -1,0 +1,19 @@
+From: Jane Doe <jane@acme.com>
+To: Sam Lee <sam@ourstudio.io>
+Subject: Re: Atlas export requirements
+Date: Thu, 19 Nov 2026 14:00:00 +0000
+Message-ID: <atlas-004@acme.com>
+In-Reply-To: <atlas-003@acme.com>
+References: <atlas-001@acme.com> <atlas-002@ourstudio.io> <atlas-003@acme.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+One change after talking to finance: we also need XLSX export alongside CSV=
+.
+
+Best,
+Jane
+
+On Wed, Nov 18, 2026 at 8:15 AM Jane Doe <jane@acme.com> wrote:
+> Just confirming: we need CSV export for Atlas, as discussed.

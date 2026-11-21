@@ -1,0 +1,15 @@
+From: Jane Doe <jane@acme.com>
+To: Sam Lee <sam@ourstudio.io>
+Subject: Re: Atlas export requirements
+Date: Wed, 18 Nov 2026 08:15:00 +0000
+Message-ID: <atlas-003@acme.com>
+In-Reply-To: <atlas-002@ourstudio.io>
+References: <atlas-001@acme.com> <atlas-002@ourstudio.io>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Just confirming: we need CSV export for Atlas, as discussed.
+
+Best,
+Jane

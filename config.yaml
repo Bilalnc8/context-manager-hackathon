@@ -1,0 +1,51 @@
+# emailctx configuration. Paths are relative to the directory this file is in.
+
+db_path: emailctx.db
+
+# One context.md per company, written to every destination configured here.
+# Each destination is written only when the rendered file's SHA-256 differs.
+output:
+  local_dir: companies          # companies/<company_id>/context.md; null to disable
+  s3:
+    bucket: null                # set to enable: s3://<bucket>/<prefix><company_id>/context.md
+    prefix: ""                  # e.g. "context/"
+    region: null                # null = boto3 default
+    profile: null               # AWS profile name; null = default credential chain
+
+models:
+  gate: claude-haiku-5-5      # cheap relevance check
+  extract: claude-opus-5-5    # JSON ops
+  judge: claude-haiku-5-5     # reword / duplicate check
+
+effort:
+  gate: low
+  extract: high
+  judge: low
+
+max_tokens:
+  gate: 1024
+  extract: 16000
+  judge: 1024
+
+# Server-side refusal fallback ("default" lets the API pick the fallback model).
+# null disables it; Haiku has no server-side fallback.
+fallbacks:
+  gate: null
+  extract: default
+  judge: null
+
+pipeline:
+  max_extract_retries: 1      # validate can send rejected ops back to extract this many times
+  min_evidence_chars: 5       # normalized evidence shorter than this is rejected
+  judge_top_k: 20             # candidates the judge sees (prefilter is a no-op until Phase 4)
+
+# Fixed category set. Anything else the LLM returns is mapped to "other".
+# Order here is the section order in context.md.
+categories:
+  - functional
+  - non-functional
+  - data
+  - integration
+  - ui
+  - constraint
+  - other

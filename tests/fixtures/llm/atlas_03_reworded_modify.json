@@ -1,0 +1,10 @@
+{
+  "gate": [{"has_change": true, "reason": "Mentions CSV export."}],
+  "extract": [
+    {"ops": [
+      {"op": "modify", "req_id": "REQ-001", "text": "Atlas needs CSV export.",
+       "evidence": "we need CSV export for Atlas"}
+    ]}
+  ],
+  "judge": [{"duplicate_of": "REQ-001", "same_meaning": true}]
+}

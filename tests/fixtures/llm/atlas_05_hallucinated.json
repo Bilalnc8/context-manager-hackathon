@@ -1,0 +1,13 @@
+{
+  "gate": [{"has_change": true, "reason": "Gate false positive."}],
+  "extract": [
+    {"ops": [
+      {"op": "add", "text": "The export must support PDF.", "category": "functional",
+       "evidence": "the export must support PDF"}
+    ]},
+    {"ops": [
+      {"op": "add", "text": "The export must support PDF.", "category": "functional",
+       "evidence": "export design must support PDF"}
+    ]}
+  ]
+}
