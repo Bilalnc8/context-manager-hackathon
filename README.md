@@ -56,3 +56,8 @@ Behind a tunnel (for Claude Desktop or a teammate), run `emailctx serve --allowe
 | `emailctx review list / assign / dismiss` | Emails the router couldn't place |
 | `emailctx conflicts list / confirm` | Contradicting emails, under "Needs confirmation" |
 | `emailctx render -c acme` | Re-render a company's file |
+| `emailctx load-sample` | Load the sample project (`dummy_data/`) into the store, in date order |
+| `emailctx eval run` | Run the sample through a fresh store and score each file against `eval/facts/` (report: `eval/run/report.md`; calls the API) |
+| `emailctx eval draft-facts expected.md -p acme` | Draft a facts checklist from an expected-outcome file |
+
+Each company's file shows deliverables with their status (open, in progress, done, verified) and where the project stands: key dates and their approval, open concerns and blockers, next actions with owners, decisions, out-of-scope work, questions for the client and their answers. Every sentence of an incoming email is either captured or listed as skipped with a reason; anything else is reported as not captured.

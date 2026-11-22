@@ -48,6 +48,7 @@ models:
   gate: claude-haiku-5-5      # cheap relevance check
   extract: claude-opus-5-5    # JSON ops
   judge: claude-haiku-5-5     # reword / duplicate check
+  # grade: claude-opus-5-5    # `emailctx eval` grading; unset = same as extract
 
 effort:
   gate: low
@@ -104,9 +105,12 @@ pipeline:
   min_evidence_chars: 5       # normalized evidence shorter than this is rejected
   judge_top_k: 20             # candidates the duplicate judge sees
   max_attachment_chars: 100000  # attachment text (PDFs etc.) read per email
+  coverage_min_words: 4       # every sentence this long must be used as evidence or skipped with a reason
 
 # Fixed category set. Anything else the LLM returns is mapped to "other".
-# Order here is the section order in context.md.
+# Deliverables (tracked open / in progress / done / verified) are grouped under
+# "Deliverables" in this order. The tracking categories (milestone, decision,
+# out-of-scope, concern, action) each get their own section of context.md.
 categories:
   - functional
   - non-functional
@@ -114,4 +118,9 @@ categories:
   - integration
   - ui
   - constraint
+  - milestone       # a key date and its approval state (pilot, demo, deadline)
+  - decision        # a decision that shapes the work
+  - out-of-scope    # excluded or deferred work, kept visible
+  - concern         # open client concern, pending decision, blocker or risk; emails can resolve it
+  - action          # next action, "Owner (Org): what, by when"; emails can resolve it
   - other

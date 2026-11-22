@@ -276,7 +276,7 @@ def test_first_sync_builds_every_company_file(denv):
 
     tree = denv.drive.tree()
     assert f"{ROOT}/Acme/Acme.md" in tree and f"{ROOT}/Globex/Globex.md" in tree
-    assert "_No requirements yet._" in denv.drive.read(f"{ROOT}/Acme/Acme.md").decode()
+    assert "_Nothing recorded yet._" in denv.drive.read(f"{ROOT}/Acme/Acme.md").decode()
     assert f"{ROOT}/Acme/Emails/2026-11-01 Update 1.txt" in tree
     assert f"{ROOT}/Acme/Documents/2026-11-03 Acme recap.pdf" in tree
     assert f"{ROOT}/Globex/Emails/2026-11-02 Update 2.txt" in tree

@@ -32,16 +32,17 @@ from emailctx.store.models import CompanyDomain, DELIVERY_STATES, Question
 from emailctx.tracker import TrackerError
 
 INSTRUCTIONS = """\
-Client project tracker: what each client company asked for (requirements extracted \
-from their emails and meeting notes, each cited to its source), the delivery status of \
-each item (open, in_progress, done, verified), and the questions only the client can \
-answer.
+Client project tracker: what each client company asked for (deliverables extracted \
+from their emails and meeting notes, each cited to its source) with the delivery status \
+of each (open, in_progress, done, verified); where the project stands (key dates and \
+their approval, open client concerns and blockers, next actions with owners, decisions, \
+out-of-scope work); and the questions only the client can answer.
 
 How to use it:
 - At the start of work on a client project, call get_company_context for that company \
 and treat it as the source of truth for what is done, open and verified.
 - When you finish an item, call set_item_status with done (QA sets verified). Use \
-in_progress when you start one.
+in_progress when you start one. A concern or action set to done counts as resolved.
 - When you need information only the client can give, call list_questions first: it \
 may already be answered or already asked. Only then call log_question. Never ask the \
 client something that is already answered.
@@ -81,6 +82,24 @@ def _fmt_question(q: Question) -> str:
         source = "from the client's email" if q.answer_source_id else f"recorded by {q.answered_by}"
         return line + f"\n  Answer ({source}): {q.answer}"
     return line + f"  [{q.status}]"
+
+
+def coverage_lines(result) -> list[str]:
+    """What happened to each sentence that produced no change, so nothing is missed
+    silently."""
+    lines = []
+    if result.skipped:
+        lines.append("Read and deliberately skipped:")
+        lines += [f'- "{s.quote}" ({s.reason})' for s in result.skipped]
+    if result.unaccounted:
+        lines.append(
+            "NOT captured and no reason given; check these and add them by hand "
+            "(set_item_status / log_question) or paste them again:"
+        )
+        lines += [f'- "{s}"' for s in result.unaccounted]
+    elif result.outcome not in ("gated_out", "empty", "review", "unassigned", "already_processed"):
+        lines.append("Every sentence was captured or skipped with a reason.")
+    return lines
 
 
 def build_server(
@@ -123,17 +142,25 @@ def build_server(
     @server.tool()
     @guarded
     def list_companies() -> str:
-        """List the client companies with how many items are open, in progress, done and
-        verified, and how many questions are waiting for the client."""
+        """List the client companies with how many deliverables are open, in progress,
+        done and verified, how many concerns and actions are open, and how many questions
+        are waiting for the client."""
         with rt().sessions() as s:
             rows = tracker.list_companies(s)
         if not rows:
             return "No client companies yet."
+
+        def n_of(n: int, word: str) -> str:
+            return f"{n} {word}{'' if n == 1 else 's'}"
+
         lines = []
         for c in rows:
             counts = ", ".join(f"{n} {_fmt_status(k)}" for k, n in c.counts.items())
-            waiting = f"{c.waiting_questions} question{'' if c.waiting_questions == 1 else 's'} waiting"
-            lines.append(f"- {c.name} (id {c.company_id}): {counts}; {waiting}")
+            lines.append(
+                f"- {c.name} (id {c.company_id}): deliverables {counts}; "
+                f"{n_of(c.open_concerns, 'open concern')}, {n_of(c.open_actions, 'open action')}, "
+                f"{n_of(c.waiting_questions, 'question')} waiting"
+            )
         return "\n".join(lines)
 
     @server.tool()
@@ -151,13 +178,15 @@ def build_server(
 
     @server.tool()
     @guarded
-    def list_items(company: str, status: str | None = None) -> str:
-        """List a client's requirements with their delivery status, optionally only one
-        status: open, in_progress, done or verified. Shows the latest status note and who
-        set it."""
+    def list_items(company: str, status: str | None = None, category: str | None = None) -> str:
+        """List a client's items with their status, optionally only one status (open,
+        in_progress, done or verified; done on a concern means resolved) and/or one
+        category: deliverable (all deliverables), milestone, concern, action, decision,
+        out-of-scope, or a deliverable category such as functional. Shows the latest
+        status note and who set it."""
         with rt().sessions() as s:
             c, p = tracker.resolve_company(s, company)
-            reqs = tracker.items(s, p.project_id, status)
+            reqs = tracker.items(s, p.project_id, status, category)
             if not reqs:
                 return f"{c.name}: no items" + (f" with status {status}." if status else ".")
             lines = []
@@ -338,7 +367,11 @@ def build_server(
         lines += [f"- ignored: {o.reason}" for o in result.dropped]
         lines += [f"- rejected: {o.reason}" for o in result.rejected]
         if result.outcome == "gated_out":
-            lines.append("No requirement changes or answers found in this input.")
+            lines.append(
+                "No changes or answers found in this input"
+                + (f" ({result.gate_reason})." if result.gate_reason else ".")
+            )
+        lines += coverage_lines(result)
         return "\n".join(lines)
 
     # --- prompt -------------------------------------------------------------------

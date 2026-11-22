@@ -1,6 +1,7 @@
 """Per-segment pipeline as a LangGraph: gate -> extract -> validate -> apply.
 
-validate can send rejected ops back to extract (up to max_extract_retries times).
+validate can send rejected ops and unaccounted sentences (see coverage.py) back to
+extract, up to max_extract_retries times.
 Rendering happens after the caller commits, so the md never reflects uncommitted state.
 """
 
@@ -24,6 +25,7 @@ from emailctx.pipeline.apply import (
 )
 from emailctx.pipeline.extract import run_extract
 from emailctx.pipeline.gate import run_gate
+from emailctx.pipeline.ops import Skipped
 from emailctx.pipeline.types import AnyOp, AppliedChange, ValidationResult
 from emailctx.pipeline.validate import validate_ops
 from emailctx.routing.embeddings import Embedder
@@ -39,7 +41,9 @@ class SegmentState(TypedDict, total=False):
     # working state
     attempt: int
     ops: list[AnyOp]
+    skipped: list[Skipped]
     validation: ValidationResult
+    gate_reason: str
     # outputs
     applied: list[AppliedChange]
     answered: list[str]  # question ids the email answered
@@ -63,7 +67,10 @@ def build_graph(deps: PipelineDeps) -> Any:
             return {"outcome": "empty"}
         questions = load_waiting_questions(deps.session, state["project_id"])
         verdict = run_gate(deps.llm, state["text"], state.get("subject", ""), questions)
-        return {} if verdict.has_change else {"outcome": "gated_out"}
+        update: SegmentState = {"gate_reason": verdict.reason}
+        if not verdict.has_change:
+            update["outcome"] = "gated_out"
+        return update
 
     def extract(state: SegmentState) -> SegmentState:
         previous = state.get("validation")
@@ -74,9 +81,14 @@ def build_graph(deps: PipelineDeps) -> Any:
             current=load_active(deps.session, state["project_id"]),
             categories=deps.settings.categories,
             rejected_feedback=previous.rejected if previous else (),
+            unaccounted_feedback=previous.unaccounted if previous else (),
             questions=load_waiting_questions(deps.session, state["project_id"]),
         )
-        return {"ops": list(result.ops), "attempt": state.get("attempt", 0) + 1}
+        return {
+            "ops": list(result.ops),
+            "skipped": list(result.skipped),
+            "attempt": state.get("attempt", 0) + 1,
+        }
 
     def validate(state: SegmentState) -> SegmentState:
         result = validate_ops(
@@ -89,6 +101,7 @@ def build_graph(deps: PipelineDeps) -> Any:
             settings=deps.settings,
             source_date=state.get("source_date"),
             questions=load_waiting_questions(deps.session, state["project_id"]),
+            skipped=state.get("skipped", []),
         )
         return {"validation": result}
 
@@ -117,7 +130,7 @@ def build_graph(deps: PipelineDeps) -> Any:
 
     def after_validate(state: SegmentState) -> str:
         v = state["validation"]
-        if v.rejected and state["attempt"] <= max_retries:
+        if (v.rejected or v.unaccounted) and state["attempt"] <= max_retries:
             return "extract"
         return "apply" if (v.accepted or v.stale or v.answers) else "no_change"
 

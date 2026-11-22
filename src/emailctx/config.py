@@ -9,7 +9,7 @@ from typing import Generic, Literal, TypeVar
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-Task = Literal["gate", "extract", "judge"]
+Task = Literal["gate", "extract", "judge", "grade"]
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 T = TypeVar("T")
 
@@ -18,8 +18,11 @@ class PerTask(BaseModel, Generic[T]):
     gate: T
     extract: T
     judge: T
+    grade: T | None = None  # `emailctx eval` grading; unset = same as extract
 
     def for_task(self, task: Task) -> T:
+        if task == "grade" and self.grade is None:
+            return self.extract
         return getattr(self, task)
 
 
@@ -50,17 +53,35 @@ class PipelineSettings(BaseModel):
     min_evidence_chars: int = 5
     judge_top_k: int = 20
     max_attachment_chars: int = 100_000  # per email, across readable attachments
+    # Coverage: every sentence of an email (with at least this many words) must be
+    # quoted by an op's evidence or listed as skipped with a reason. Sentences left
+    # unaccounted are sent back to extraction (within max_extract_retries) and reported.
+    coverage_min_words: int = 4
 
 
 DEFAULT_CATEGORIES = [
+    # Deliverables: what gets built, each tracked open -> in progress -> done -> verified.
     "functional",
     "non-functional",
     "data",
     "integration",
     "ui",
     "constraint",
+    # Project tracking: where the project stands around the deliverables.
+    "milestone",     # a key date and its approval state (pilot, demo, deadline)
+    "decision",      # a decision that shapes the work
+    "out-of-scope",  # excluded or deferred work, kept visible so it isn't re-proposed
+    "concern",       # an open client concern, pending decision, blocker or risk
+    "action",        # a next action: "Owner (Org): what, by when"
     "other",
 ]
+
+# Categories that are not deliverables. The renderer gives each its own section; the
+# rest (any other configured category) are deliverables.
+TRACKING_CATEGORIES = ("milestone", "decision", "out-of-scope", "concern", "action")
+# Items an email can close with a `resolve` op (a fixed blocker, a completed action).
+# Deliverables are never closed by email: their status is set by the team.
+RESOLVABLE_CATEGORIES = ("concern", "action")
 
 
 class S3Settings(BaseModel):

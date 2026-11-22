@@ -12,9 +12,11 @@ GATE_SYSTEM = """\
 You screen project emails before requirements extraction.
 
 Set has_change to true if the email states a new requirement, changes or withdraws an \
-existing one, or records a decision that changes what the project must deliver. Set it \
-to false for thanks, acknowledgements, scheduling, status updates and FYIs that leave \
-the requirements as they are. If open questions to the client are listed, an email \
+existing one, or records a decision that changes what the project must deliver. Also \
+set it to true when it changes where the project stands: a key date or its approval \
+(pilot, demo, deadline), work excluded or deferred, a client concern, blocker or risk \
+raised or resolved, or a next action with an owner. Set it to false only for thanks, \
+acknowledgements, meeting logistics and FYIs that change none of these. If open questions to the client are listed, an email \
 that answers one of them also counts: set has_change to true. Attachment text (after \
 "--- Attachment: <name> ---", e.g. a meeting summary) is part of the email. Give a \
 one-line reason.

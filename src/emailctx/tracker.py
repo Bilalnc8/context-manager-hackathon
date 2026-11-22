@@ -24,10 +24,12 @@ from email.utils import format_datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from emailctx.config import TRACKING_CATEGORIES
 from emailctx.context import CompanyFile, CompanyNotFound, find_company
 from emailctx.store.db import utcnow
 from emailctx.store.models import (
     DELIVERY_STATES,
+    FINISHED_STATES,
     Company,
     Project,
     Question,
@@ -49,8 +51,10 @@ class CompanySummary:
     company_id: str
     name: str
     project_id: str
-    counts: dict[str, int]  # delivery state -> active requirements in it
+    counts: dict[str, int]  # delivery state -> active deliverables in it
     waiting_questions: int
+    open_concerns: int = 0
+    open_actions: int = 0
 
 
 def _companies_with_projects(session: Session) -> list[tuple[Company, Project]]:
@@ -82,18 +86,25 @@ def list_companies(session: Session) -> list[CompanySummary]:
     out = []
     for c, p in _companies_with_projects(session):
         counts = dict.fromkeys(DELIVERY_STATES, 0)
-        for state, n in session.execute(
-            select(Requirement.delivery, func.count())
+        open_by_kind = {"concern": 0, "action": 0}
+        for category, state, n in session.execute(
+            select(Requirement.category, Requirement.delivery, func.count())
             .where(Requirement.project_id == p.project_id, Requirement.status == "active")
-            .group_by(Requirement.delivery)
+            .group_by(Requirement.category, Requirement.delivery)
         ):
-            counts[state] = n
+            if category not in TRACKING_CATEGORIES:
+                counts[state] = counts.get(state, 0) + n
+            elif category in open_by_kind and state not in FINISHED_STATES:
+                open_by_kind[category] += n
         waiting = session.scalar(
             select(func.count()).select_from(Question).where(
                 Question.project_id == p.project_id, Question.status.in_(("open", "asked"))
             )
         )
-        out.append(CompanySummary(c.company_id, c.name, p.project_id, counts, waiting or 0))
+        out.append(CompanySummary(
+            c.company_id, c.name, p.project_id, counts, waiting or 0,
+            open_by_kind["concern"], open_by_kind["action"],
+        ))
     return out
 
 
@@ -107,10 +118,18 @@ def _req_id(value: str) -> str:
     return v
 
 
-def items(session: Session, project_id: str, delivery: str | None = None) -> list[Requirement]:
+def items(
+    session: Session, project_id: str, delivery: str | None = None, category: str | None = None
+) -> list[Requirement]:
     q = select(Requirement).where(
         Requirement.project_id == project_id, Requirement.status == "active"
     )
+    if category:
+        c = category.strip().lower().replace("_", "-").replace(" ", "-")
+        if c == "deliverable":
+            q = q.where(Requirement.category.not_in(TRACKING_CATEGORIES))
+        else:
+            q = q.where(Requirement.category == c)
     if delivery:
         if delivery not in DELIVERY_STATES:
             raise TrackerError(f"status must be one of {', '.join(DELIVERY_STATES)}")

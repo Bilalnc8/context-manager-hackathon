@@ -5,7 +5,9 @@ Also records conflicts for "Needs confirmation":
 - a stale op from an email older than the requirement's last change (not applied).
 
 A modify of finished work (done or verified) reopens it: what was delivered no longer
-matches what the client asks for. Client answers to open questions close them.
+matches what the client asks for. A resolve closes a concern or action (delivery
+"done", shown as resolved), logged in status_changes as set by the email. Client answers
+to open questions close them.
 
 The evidence quote was checked against the email during validation and is not stored.
 """
@@ -81,6 +83,9 @@ def apply_answers(
     return done
 
 
+RESOLVED_NOTE = "resolved by email"
+
+
 def format_req_id(seq: int) -> str:
     return f"REQ-{seq:03d}"
 
@@ -130,7 +135,22 @@ def apply_ops(
             req_id = req.req_id
             old_text = req.text
             previous_source = req.source_ids[-1] if req.source_ids else None
-            if op.kind == "modify":
+            if op.kind == "resolve":
+                session.add(
+                    StatusChange(
+                        project_id=project_id,
+                        req_id=req.req_id,
+                        old_status=req.delivery,
+                        new_status="done",
+                        note=RESOLVED_NOTE,
+                        changed_by=f"email {op.msg_id}",
+                        changed_at=now,
+                    )
+                )
+                req.delivery = "done"
+                req.delivery_note = RESOLVED_NOTE
+                new_text = req.text
+            elif op.kind == "modify":
                 assert op.text is not None
                 if req.delivery in FINISHED_STATES:
                     session.add(

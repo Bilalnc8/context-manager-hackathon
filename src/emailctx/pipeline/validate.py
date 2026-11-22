@@ -27,6 +27,15 @@ Answers to the client questions:
 9. answer must pass the evidence check, name a question that is still waiting (open or
    asked), and answer each question at most once per email.
 
+Concerns and actions closed by an email:
+10. resolve must pass the evidence check and name an active concern or action
+    (RESOLVABLE_CATEGORIES). A deliverable is never resolved by email: its delivery
+    status is set by the team. Already resolved -> dropped; from an email older than the
+    item's last change -> dropped (the newer state stands).
+
+Coverage (pipeline/coverage.py): every sentence must be quoted by an op that wasn't
+rejected or by a `skipped` entry; the rest are `unaccounted`.
+
 Rejected ops can be sent back to extraction for a retry. Dropped ops are legitimate
 no-ops and are not retried.
 """
@@ -36,9 +45,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
-from emailctx.config import Settings
+from emailctx.config import RESOLVABLE_CATEGORIES, Settings
 from emailctx.llm import LLMClient
-from emailctx.pipeline.ops import AddOp, AnswerOp, JudgeResult, ModifyOp, NoneOp, RemoveOp
+from emailctx.pipeline.coverage import unaccounted
+from emailctx.pipeline.ops import (
+    AddOp,
+    AnswerOp,
+    JudgeResult,
+    ModifyOp,
+    NoneOp,
+    RemoveOp,
+    ResolveOp,
+    Skipped,
+)
 from emailctx.pipeline.types import (
     AcceptedAnswer,
     AcceptedOp,
@@ -94,6 +113,7 @@ def validate_ops(
     settings: Settings,
     source_date: datetime | None = None,
     questions: Sequence[QuestionView] = (),
+    skipped: Sequence[Skipped] = (),
 ) -> ValidationResult:
     result = ValidationResult()
     waiting = {q.question_id for q in questions}
@@ -143,13 +163,32 @@ def validate_ops(
                 result.answers.append(AcceptedAnswer(qid, answer, op.evidence, msg_id))
             continue
 
-        if isinstance(op, (ModifyOp, RemoveOp)):
+        if isinstance(op, (ModifyOp, RemoveOp, ResolveOp)):
             if op.req_id not in active:
                 reject(op, f"unknown or removed requirement id {op.req_id}")
                 continue
             if op.req_id in targeted:
                 drop(op, f"{op.req_id} already changed by an earlier op in this email")
                 continue
+
+        if isinstance(op, ResolveOp):
+            target = active[op.req_id]
+            if target.category not in RESOLVABLE_CATEGORIES:
+                reject(
+                    op,
+                    f"{op.req_id} is a {target.category} item; only concerns and actions can "
+                    "be resolved by email (a deliverable's status is set by the team)",
+                )
+            elif target.delivery in FINISHED_STATES:
+                drop(op, f"{op.req_id} is already resolved")
+            elif is_stale(target):
+                drop(op, f"email is older than {op.req_id}'s last change")
+            else:
+                targeted.add(op.req_id)
+                result.accepted.append(
+                    AcceptedOp("resolve", op.req_id, None, None, op.evidence, msg_id)
+                )
+            continue
 
         if isinstance(op, RemoveOp):
             targeted.add(op.req_id)
@@ -220,4 +259,17 @@ def validate_ops(
         added_norms.add(norm)
         result.accepted.append(AcceptedOp("add", None, text, category, op.evidence, msg_id))
 
+    # Coverage. Skipped quotes pass the same verbatim check as evidence.
+    for s in skipped:
+        quote = normalize_match(s.quote)
+        if len(quote) >= min_chars and quote in source_norm and s.reason.strip():
+            result.skipped.append(s)
+    quotes = [op.evidence for op in (*result.accepted, *result.stale)]
+    quotes += [o.op.evidence for o in result.dropped]
+    quotes += [a.evidence for a in result.answers]
+    quotes += [s.quote for s in result.skipped]
+    result.unaccounted = unaccounted(
+        source_text, quotes,
+        min_words=settings.pipeline.coverage_min_words, min_overlap=min_chars,
+    )
     return result

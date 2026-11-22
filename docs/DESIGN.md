@@ -149,13 +149,13 @@ These three steps run per project segment. Validation is where "only change when
 
 ### Relevance gate
 
-- A cheap LLM call asks: does this segment contain a requirement, decision or scope change?
-- "Thanks", meeting scheduling and FYIs stop here
+- A cheap LLM call asks: does this segment contain a requirement, decision or scope change, or change where the project stands (a key date or its approval, a concern or blocker raised or resolved, a next action)?
+- "Thanks", meeting logistics and FYIs stop here; the gate's reason is reported with the result
 
 ### Extraction
 
 - Input: the cleaned segment plus the project's current requirements (IDs + text)
-- Output: JSON ops only, no prose. Allowed ops: `add`, `modify`, `remove`, `none`
+- Output: JSON ops only, no prose. Allowed ops: `add`, `modify`, `remove`, `resolve` (close a concern or action), `answer` (a client question), `none`; plus `skipped`: every other sentence, quoted, with the reason it changes nothing (see Coverage)
 
 ```json
 {"ops": [
@@ -174,7 +174,14 @@ These three steps run per project segment. Validation is where "only change when
 - `add` is checked for near-duplicates (embeddings or an LLM comparison); duplicates are dropped or converted to modify
 - `modify` where the normalized text is unchanged is dropped as a rewording
 - Conflicts (a newer email contradicts an older one): latest wins, flagged under "Needs confirmation" in the md
+- `resolve` must name an active concern or action; a deliverable is never closed by email (its status is set by the team). Already resolved, or from an email older than the item's last change: dropped
 - Zero surviving ops means the md is not touched
+
+### Coverage: nothing in an email is missed
+
+- Code splits the cleaned text into sentences (wrapped lines joined; list items and headings start new ones; "Dec. 5" and "e.g." don't split). Sentences under `pipeline.coverage_min_words` words (4) are not checked.
+- A sentence is accounted for when a verbatim quote overlaps it: the evidence of an op that wasn't rejected (accepted, dropped as a rewording or duplicate, stale, or an answer), or a `skipped` quote that itself passes the evidence check.
+- Unaccounted sentences go back to extraction with the rejected ops (within `max_extract_retries`), then are reported with the result: `add_client_input` and the CLI list what was skipped and why, and anything **not captured** so a person can look. They don't change the file.
 
 ## Data model
 
@@ -209,7 +216,8 @@ Implementation additions (see Decisions below): `requirements` keyed on `(projec
 
 Each company's `context.md` is rendered by a template from the store, so the same requirements always produce the same bytes.
 
-- Template (Jinja): a section per project; within it, requirements sorted by ID and grouped by category; a "Needs confirmation" section for conflicts; and a company-wide changelog
+- Template (Jinja): a header (project, client domain, status counts, last change), then most actionable first: Key dates, Open concerns, Questions for the client, Needs confirmation, Deliverables (one subsection per deliverable category, each item with its status), Next actions, Out of scope, Decisions, Answered by the client, Resolved and completed, Changelog. Items are sorted by ID within a section
+- "Last change" is the date and subject of the newest source behind a change, never the wall clock, so an email that changes nothing leaves the file byte-identical
 - Sources are markdown footnotes on each requirement and changelog entry: `[^1]: Email "<subject>", <date>, ID <Message-ID>`. The ID is shown only when the email had a Message-ID. Footnotes are numbered by email date, so existing numbers don't shift when newer emails arrive.
 - Published to `s3://<bucket>/<prefix><company_id>/context.md` and/or `<local_dir>/<company_id>/context.md`. Hash the rendered output and compare it to each destination (S3 keeps the SHA-256 in object metadata). Write only where they differ.
 - Keep the md files in a git repo, one file per project. Each update is a commit like `REQ-007 modified (email 18c2..., Nov 20)`, giving history and easy rollback.
@@ -247,12 +255,13 @@ Gmail sync comes before routing so that real synced emails can serve as routing 
 
 - **Evidence matching.** Both the evidence and the cleaned source text are normalized before the substring check: NFKC, strip zero-width characters, map curly quotes and dashes to ASCII, collapse whitespace. Matching stays case-sensitive. The evidence string is used only for this check and is not stored.
 - **Reword and dedupe.** First a cheap exit: drop a `modify` whose normalized text equals the current text, and an `add` whose normalized text equals an existing requirement. Then an LLM judge compares the proposed text with existing requirements and returns `{duplicate_of, same_meaning}`. For `modify`, same meaning means the op is dropped. For `add`, a duplicate with the same meaning is dropped; a duplicate with a different meaning becomes a `modify` of that requirement. An `Embedder` interface exists from Phase 1 with a no-op implementation (every requirement is a candidate). In Phase 4 sentence-transformers plugs in as a prefilter so the judge sees only the top-k similar requirements.
-- **Categories.** A fixed set from config. Anything else the LLM returns is mapped to `other`, not rejected.
+- **Categories.** A fixed set from config. Anything else the LLM returns is mapped to `other`, not rejected. Two kinds: deliverables (functional, non-functional, data, integration, ui, constraint, other), tracked open / in progress / done / verified; and tracking items that say where the project stands (`milestone`: a key date and its approval state; `decision`; `out-of-scope`: excluded or deferred work, kept visible rather than removed; `concern`: an open client concern, pending decision, blocker or risk; `action`: "Owner (Org): what, by when"). Proposals and requests for discussion are recorded as concerns until decided, never as deliverables.
+- **Closing concerns and actions.** An email can `resolve` a concern or action (delivery `done`, shown as resolved, logged in `status_changes` as set by `email <msg_id>`); the team can also close one with `set_item_status`. A modify of a resolved concern reopens it, like finished work. Delivery status of deliverables stays the team's: no email sets it.
 - **Message IDs.** The RFC `Message-ID` header is the dedupe key (`msg_id`). Gmail's own message ID lives in its own column. If `Message-ID` is missing, `msg_id` falls back to a SHA-256 of from + date + subject + cleaned body.
 - **Requirement IDs** are assigned by code (`REQ-001`, `REQ-002`, … per project) and never reused. The LLM never picks the ID for an `add`.
 - **Remove** sets `status = removed`; rows are never deleted, so history and citations survive.
 - **Where emails live.** Each input's cleaned text and sender are stored with its message (changed from the first design, which kept no bodies: once the MCP server became the shared store, pasted input existed nowhere else). Gmail keeps the originals of synced mail. With Drive output on, a readable `.txt` copy of every email routed to a company and its attachments also go to that company's Drive folder. Evidence quotes are validated in memory and discarded; citations are the email's ID (when it has a Message-ID), subject, date and attachment names, and `get_source` opens the stored text.
-- **One project per company, one file per company.** Each company has exactly one project; the registry and the CLI refuse a second one. So a company's `context.md` is simply its project's requirements (categories as `##` sections, no project heading). `--company` alone is enough on `ingest-file` and `review assign`: it means the company's project, created with the company's id and name if needed.
+- **One project per company, one file per company.** Each company has exactly one project; the registry and the CLI refuse a second one. So a company's `context.md` is simply its project's items (sections as `##`, no project heading). `--company` alone is enough on `ingest-file` and `review assign`: it means the company's project, created with the company's id and name if needed.
 - **Output.** The local folder (`output.local_dir`) is on by default; Google Drive (`output.drive`, described below) is optional and off by default, since the MCP server reads the database directly. S3 (optional) is enabled by setting `output.s3.bucket` in config; credentials come from boto3's standard chain and are never logged. Turning on bucket versioning gives history and rollback. Each S3 object carries a `change` metadata line describing the change and its source email. Optionally (`output.git_commit`), the local output folder is its own git repo with one commit per changed file, e.g. `atlas: REQ-001 modify (email <id>, 2026-11-19)`.
 
 ### Gmail (Phase 2)
@@ -310,6 +319,12 @@ client input: pasted into a session (add_client_input), .eml files, team Gmail s
 - **Contradictions:** the judge also returns `contradicts`. A modify that reverses the current text (not one that extends it) is applied and recorded as a `contradiction` conflict.
 - Open conflicts render under "Needs confirmation", citing both emails. `emailctx conflicts confirm C<n>` accepts the current text; `--use-other` switches to the other email's version, cited to that email.
 - **Models and thresholds** live in `config.yaml`. Extraction defaults to `claude-opus-5-5`; the gate and the judge default to `claude-haiku-5-5`.
+
+### The sample project and `emailctx eval`
+
+- `dummy_data/` is the company's sample: `domain_project_mapping.yaml` (internal domain + one project per client domain), `emails.jsonl` (with Message-ID and In-Reply-To), and six meeting write-ups. `expected_context/<project>.md` is the expected outcome.
+- `emailctx load-sample [dummy_data]` loads it into the configured store for a demo: the registry, then every email and meeting write-up in date order through the normal pipeline, routing included. Meeting write-ups arrive as email from a note-taker address (`notetaker.example`, treated as a meeting bot), so they are routed by the company they name. Each input is also written as an `.eml` under `sample-eml/` next to the database. Running it again changes nothing.
+- `emailctx eval run` does the same in a fresh store under `eval/run/` (never the real database; the folder is cleared only if the command created it), then reports: routing against `expected_project_id`, unaccounted sentences, rejected ops, whether a second pass changes anything, and a fact score per project. The facts are a checklist per expected file (`eval/facts/<project>.yaml`, drafted with `emailctx eval draft-facts`); an LLM grades each as present, missing or contradicted and must quote the generated file verbatim, or the fact counts as missing. Report: `eval/run/report.md`, next to the generated files. It calls the Anthropic API (the `grade` model defaults to the extraction model).
 
 ## Google auth: setup and handoff
 

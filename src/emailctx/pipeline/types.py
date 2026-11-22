@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
-from emailctx.pipeline.ops import AddOp, AnswerOp, ModifyOp, NoneOp, RemoveOp
+from emailctx.pipeline.ops import AddOp, AnswerOp, ModifyOp, NoneOp, RemoveOp, ResolveOp, Skipped
 
-AnyOp = AddOp | ModifyOp | RemoveOp | AnswerOp | NoneOp
+AnyOp = AddOp | ModifyOp | RemoveOp | ResolveOp | AnswerOp | NoneOp
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,7 @@ class AcceptedAnswer:
 
 @dataclass(frozen=True)
 class AcceptedOp:
-    kind: Literal["add", "modify", "remove"]
+    kind: Literal["add", "modify", "remove", "resolve"]
     req_id: str | None  # None for add; assigned on apply
     text: str | None
     category: str | None
@@ -69,11 +69,15 @@ class ValidationResult:
     # not applied, recorded as conflicts for a person to confirm.
     stale: list[AcceptedOp] = field(default_factory=list)
     answers: list[AcceptedAnswer] = field(default_factory=list)  # client answers to questions
+    # Coverage: sentences the extraction listed as changing nothing (quote verified),
+    # and sentences neither quoted by an op nor listed. See pipeline/coverage.py.
+    skipped: list[Skipped] = field(default_factory=list)
+    unaccounted: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class AppliedChange:
     req_id: str
-    op: Literal["add", "modify", "remove"]
+    op: Literal["add", "modify", "remove", "resolve"]
     old_text: str | None
     new_text: str | None

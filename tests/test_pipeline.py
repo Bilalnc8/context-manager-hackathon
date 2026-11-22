@@ -21,7 +21,8 @@ def test_initial_email_creates_requirements(seeded):
     md = seeded.md_bytes().decode()
     assert "## atlas" not in md  # one project per company: no project heading
     assert "- **REQ-001** [open] The export must support CSV.[^1]" in md
-    assert "\n## Non-functional\n" in md
+    assert "\n## Deliverables\n\n### Functional\n" in md
+    assert "\n### Non-functional\n" in md
     assert "- 2026-11-16 · **REQ-001** added: The export must support CSV.[^1]" in md
     assert '[^1]: Email "Atlas export requirements", 2026-11-16, ID `atlas-001@acme.com`' in md
 

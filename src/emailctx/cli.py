@@ -72,6 +72,12 @@ def _print_result(result) -> None:
         typer.echo(f"  dropped  {o.op.op:<6} {o.reason}")
     for o in result.rejected:
         typer.secho(f"  rejected {o.op.op:<6} {o.reason}", fg="yellow")
+    if result.outcome == "gated_out" and result.gate_reason:
+        typer.echo(f"  gate:    {result.gate_reason}")
+    for s in result.skipped:
+        typer.echo(f'  skipped  "{s.quote}" ({s.reason})')
+    for s in result.unaccounted:
+        typer.secho(f'  NOT CAPTURED "{s}"', fg="red")
     for p in result.published:
         typer.echo(f"{'wrote' if p.written else 'unchanged'} {p.destination}")
 
@@ -565,6 +571,88 @@ def conflicts_confirm_cmd(
         raise typer.Exit(2) from e
     for p in results:
         typer.echo(f"{'wrote' if p.written else 'unchanged'} {p.destination}")
+
+
+# --- sample project and eval ------------------------------------------------------------
+
+eval_app = typer.Typer(help="Score the pipeline on the company's sample project.")
+app.add_typer(eval_app, name="eval")
+
+
+def _sample_line(item, result) -> str:
+    changes = len(result.applied) + len(result.answered)
+    extra = f", {len(result.unaccounted)} NOT CAPTURED" if result.unaccounted else ""
+    where = result.company_id or "-"
+    return f"{item.source_id:<12} {where:<8} {result.outcome:<17} {changes} changes{extra}"
+
+
+@app.command("load-sample")
+def load_sample_cmd(
+    folder: Annotated[Path, typer.Argument(exists=True, file_okay=False, help="Sample folder.")] = Path("dummy_data"),
+    config: ConfigOpt = None,
+) -> None:
+    """Load the sample project (registry, emails, meeting notes) into the configured store,
+    in date order. Running it again changes nothing."""
+    from emailctx.llm import LLMError
+    from emailctx.sample import load_sample, read_sample
+
+    settings = load_settings(config)
+    rt = _runtime(settings)
+    try:
+        load_sample(
+            read_sample(folder), rt, settings.db_path.parent / "sample-eml",
+            on_result=lambda i, r: typer.echo(_sample_line(i, r)),
+        )
+    except LLMError as e:
+        typer.secho(f"error: {e} (inputs so far are saved; rerun to continue)", fg="red")
+        raise typer.Exit(1) from e
+
+
+@eval_app.command("run")
+def eval_run_cmd(
+    sample: Annotated[Path, typer.Option("--sample", exists=True, file_okay=False)] = Path("dummy_data"),
+    facts: Annotated[Path, typer.Option("--facts", exists=True, file_okay=False)] = Path("eval/facts"),
+    workdir: Annotated[Path, typer.Option("--workdir", help="Fresh store, generated files and report.md.")] = Path("eval/run"),
+    config: ConfigOpt = None,
+) -> None:
+    """Process the sample in a fresh store with the configured models, then score each
+    generated file against the expected facts. Calls the Anthropic API (costs money)."""
+    from emailctx.evaluate import EvalError, run_eval
+    from emailctx.llm import AnthropicLLM, LLMError
+
+    settings = load_settings(config)
+    try:
+        report = run_eval(
+            sample, facts, workdir, settings, AnthropicLLM(settings),
+            on_result=lambda i, r: typer.echo(_sample_line(i, r)),
+        )
+    except (EvalError, LLMError) as e:
+        typer.secho(f"error: {e}", fg="red")
+        raise typer.Exit(1) from e
+    present, total = report.score()
+    typer.echo("")
+    typer.echo(report.to_markdown())
+    typer.secho(f"{present}/{total} facts present; report: {workdir / 'report.md'}", fg="green")
+
+
+@eval_app.command("draft-facts")
+def eval_draft_facts_cmd(
+    expected: Annotated[Path, typer.Argument(exists=True, dir_okay=False, help="Expected context .md")],
+    project: Annotated[str, typer.Option("--project", "-p", help="Project id for the facts file.")],
+    config: ConfigOpt = None,
+) -> None:
+    """Draft a facts checklist (YAML on stdout) from an expected-outcome file, to review
+    and save under eval/facts/."""
+    import yaml
+
+    from emailctx.evaluate import draft_facts
+    from emailctx.llm import AnthropicLLM
+
+    settings = load_settings(config)
+    drafted = draft_facts(AnthropicLLM(settings), expected.read_text(encoding="utf-8"))
+    data = {"project": project, "expected": expected.as_posix(),
+            "facts": [f.model_dump() for f in drafted.facts]}
+    typer.echo(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
 
 
 if __name__ == "__main__":  # pragma: no cover
