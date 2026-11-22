@@ -20,6 +20,20 @@ app.add_typer(review_app, name="review")
 app.add_typer(registry_app, name="registry")
 app.add_typer(conflicts_app, name="conflicts")
 
+@app.callback()
+def _load_dotenv() -> None:
+    """Every command reads .env (API keys, login settings) from the working directory and
+    from the folder of $EMAILCTX_CONFIG. Variables already set in the environment win.
+    Tests set EMAILCTX_NO_DOTENV so a developer's real keys never reach them."""
+    if os.environ.get("EMAILCTX_NO_DOTENV"):
+        return
+    from emailctx.oauth import load_env_file
+
+    load_env_file(Path.cwd() / ".env")
+    if os.environ.get("EMAILCTX_CONFIG"):
+        load_env_file(Path(os.environ["EMAILCTX_CONFIG"]).resolve().parent / ".env")
+
+
 ConfigOpt = Annotated[
     Optional[Path],
     typer.Option("--config", help="Config file (default: $EMAILCTX_CONFIG or ./config.yaml)."),

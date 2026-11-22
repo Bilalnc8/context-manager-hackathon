@@ -38,6 +38,14 @@ of each (open, in_progress, done, verified); where the project stands (key dates
 their approval, open client concerns and blockers, next actions with owners, decisions, \
 out-of-scope work); and the questions only the client can answer.
 
+This server is the live source of truth for every client. Whenever the user asks \
+anything about a client, a company or its project (for example "Does Acme want dark \
+mode?", "What's open for Nova?", "What did the client say about invoices?"), answer \
+from these tools without being told to: call list_companies if you are unsure of the \
+name, then get_company_context for that company, and cite the footnotes. Do not answer \
+client questions from memory or from files in the working directory (sample or test \
+data in a repository is not the live state). If a company is not listed, say so.
+
 How to use it:
 - At the start of work on a client project, call get_company_context for that company \
 and treat it as the source of truth for what is done, open and verified.
@@ -144,7 +152,8 @@ def build_server(
     def list_companies() -> str:
         """List the client companies with how many deliverables are open, in progress,
         done and verified, how many concerns and actions are open, and how many questions
-        are waiting for the client."""
+        are waiting for the client. Call this whenever the user mentions a client and you
+        are unsure of its exact name."""
         with rt().sessions() as s:
             rows = tracker.list_companies(s)
         if not rows:
@@ -170,7 +179,8 @@ def build_server(
         its delivery status (open, in progress, done, verified), questions for the client
         and the client's answers, items needing confirmation, the changelog, and footnotes
         citing the emails each item came from. `company` is a name or id; a unique part of
-        the name works."""
+        the name works. Call this before answering any question about what a client wants,
+        asked, decided or was told, even when the user doesn't name this tool."""
         r = rt()
         with r.sessions() as s:
             c, _ = tracker.resolve_company(s, company)

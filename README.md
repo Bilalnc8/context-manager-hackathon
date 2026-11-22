@@ -4,6 +4,7 @@ Any coding agent, in any new session, knows where a client project stands: what 
 
 Client emails and meeting notes go through a pipeline that pulls out requirements, each cited to its source, without duplicating or inventing anything. The team tracks delivery status and client questions on top of that. Every Claude session (Claude Code, Claude Desktop, claude.ai) reaches it through one MCP server.
 
+- **Setting it up (start here): [docs/SETUP.md](docs/SETUP.md)**: Google Cloud, Gmail, `.env`, LLM key, MCP login, connecting Claude, troubleshooting
 - Challenge brief: [docs/challenge-8.md](docs/challenge-8.md)
 - System design: [docs/DESIGN.md](docs/DESIGN.md)
 - Google setup, for inbox reading (`emailctx auth`) and MCP server login: [Google auth: setup and handoff](docs/DESIGN.md#google-auth-setup-and-handoff)

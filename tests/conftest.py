@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+
+# Keep a developer's real .env (API keys, login settings) out of the tests.
+os.environ["EMAILCTX_NO_DOTENV"] = "1"
+
 from dataclasses import dataclass
 from pathlib import Path
 
