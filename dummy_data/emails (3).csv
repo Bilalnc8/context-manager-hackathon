@@ -1,0 +1,18 @@
+# Synthetic demo domains (.example are reserved and cannot deliver real email).
+# MVP assumption: exactly one project per client email domain.
+# Internal domain is deliberately NOT mapped to a project.
+internal_domains:
+  - contextlab.example
+projects:
+  acme:
+    name: "Acme Customer Portal"
+    domains: ["acme.example"]
+    context_file: "expected_context/acme.md"
+  nova:
+    name: "Nova Inventory Sync"
+    domains: ["nova.example"]
+    context_file: "expected_context/nova.md"
+  orion:
+    name: "Orion Analytics Dashboard"
+    domains: ["orion.example"]
+    context_file: "expected_context/orion.md"
