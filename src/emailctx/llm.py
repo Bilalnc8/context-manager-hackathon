@@ -78,10 +78,15 @@ class GeminiLLM:
     """
 
     _THINKING = {"low": "low", "medium": "high", "high": "high", "xhigh": "high", "max": "high"}
+    _RETRY_CODES = {500, 502, 503, 504}
+    _RETRY_WAITS = (2.0, 5.0, 10.0)  # seconds before each retry
 
-    def __init__(self, settings: Settings, client: Any | None = None) -> None:
+    def __init__(self, settings: Settings, client: Any | None = None, sleep: Any = None) -> None:
+        import time
+
         self._settings = settings
         self._client = client
+        self._sleep = sleep or time.sleep
         if client is None:
             from google import genai
 
@@ -103,12 +108,22 @@ class GeminiLLM:
                 thinking_level=self._THINKING[s.effort.for_task(task)]
             ),
         )
-        try:
-            response = self._client.models.generate_content(
-                model=s.models.for_task(task), contents=prompt, config=config
-            )
-        except errors.APIError as e:
-            raise LLMError(f"{task}: API error: {e}") from e
+        attempt = 0
+        while True:
+            try:
+                response = self._client.models.generate_content(
+                    model=s.models.for_task(task), contents=prompt, config=config
+                )
+                break
+            except errors.APIError as e:
+                # 500/503 ("high demand") are usually gone within seconds: retry here
+                # instead of failing the whole email until the next poll. 429 (quota)
+                # and 4xx don't fix themselves, so they fail at once.
+                if getattr(e, "code", None) in self._RETRY_CODES and attempt < len(self._RETRY_WAITS):
+                    self._sleep(self._RETRY_WAITS[attempt])
+                    attempt += 1
+                    continue
+                raise LLMError(f"{task}: API error: {e}") from e
 
         candidate = (response.candidates or [None])[0]
         reason = getattr(getattr(candidate, "finish_reason", None), "name", None)
