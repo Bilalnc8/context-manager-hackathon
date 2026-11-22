@@ -230,6 +230,7 @@ def _record_message(
                 date=parsed.date,
                 attachments=[a.filename for a in parsed.attachments] or None,
                 sender=parsed.sender,
+                sender_name=parsed.sender_name,
                 body=body,
                 source=source,
                 ingested_at=utcnow(),

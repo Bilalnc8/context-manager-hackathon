@@ -102,7 +102,7 @@ def test_older_email_does_not_overwrite_newer_change(seeded, tmp_path):
     md = seeded.md_bytes().decode()
     assert ('**C1** · **REQ-001**: an older email says "The export must support CSV and JSON."[^2], '
             'but a newer one set "The export must support CSV and XLSX."[^3]. The newer email won.') in md
-    assert '[^2]: Email "Re: Atlas export requirements", 2026-11-17, ID `json@acme.com`' in md
+    assert '[^2]: Email "Re: Atlas export requirements", 2026-11-17, from jane@acme.com' in md
 
     # Re-ingesting the late email changes nothing.
     snapshot, md_bytes = seeded.snapshot(), seeded.md_bytes()

@@ -43,6 +43,7 @@ _ADDED_COLUMNS = {
     },
     "messages": {
         "sender": "VARCHAR",
+        "sender_name": "VARCHAR",
         "body": "TEXT",
     },
 }

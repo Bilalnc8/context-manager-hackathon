@@ -24,7 +24,7 @@ def test_initial_email_creates_requirements(seeded):
     assert "\n## Deliverables\n\n### Functional\n" in md
     assert "\n### Non-functional\n" in md
     assert "- 2026-11-16 · **REQ-001** added: The export must support CSV.[^1]" in md
-    assert '[^1]: Email "Atlas export requirements", 2026-11-16, ID `atlas-001@acme.com`' in md
+    assert '[^1]: Email "Atlas export requirements", 2026-11-16, from Jane Doe' in md
 
 
 # 1. A reply quoting an old requirement does not re-add it ---------------------------
@@ -164,7 +164,7 @@ def test_real_change_modifies_exactly_one_requirement(seeded):
     md = seeded.md_bytes().decode()
     assert seeded.md_bytes() != before_md
     assert "- **REQ-001** [open] The export must support CSV and XLSX.[^1][^2]" in md
-    assert '[^2]: Email "Re: Atlas export requirements", 2026-11-19, ID `atlas-004@acme.com`' in md
+    assert '[^2]: Email "Re: Atlas export requirements", 2026-11-19, from Jane Doe' in md
     assert "we also need XLSX export alongside CSV" not in md  # quote checked, not kept
 
 

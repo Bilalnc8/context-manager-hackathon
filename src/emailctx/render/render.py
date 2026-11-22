@@ -22,9 +22,10 @@ order. (Should a company ever hold several projects, each gets its own section a
 company-level lines name the project.) Each item and changelog entry cites its source
 emails as markdown footnotes:
 
-    [^1]: Email "Atlas export requirements", 2026-11-16, ID `atlas-001@acme.com`
+    [^1]: Email "Atlas export requirements", 2026-11-16, from Jane Doe
 
-The ID is shown only when the email had a real Message-ID. Footnotes are numbered by
+The sender is the From display name (the address only when there is no name; the file
+may be published, so addresses stay out of it otherwise). Footnotes are numbered by
 source date, so new emails get new numbers and existing numbers stay put.
 
 Same store contents -> same bytes: no wall-clock times, "\n" line endings. The header's
@@ -91,11 +92,29 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
+def sender_label(message: Message | None) -> str | None:
+    """'Gurinder Gill (gill@gmail.com)', or just the address when there is no name."""
+    if message is None or not message.sender:
+        return None
+    name = getattr(message, "sender_name", None)
+    return f"{_one_line(name)} ({message.sender})" if name else message.sender
+
+
+def _footnote_sender(message: Message | None) -> str | None:
+    """The sender's display name for a citation. The file may be published (Drive,
+    S3, git), so the address appears only when the email had no name."""
+    if message is None:
+        return None
+    name = getattr(message, "sender_name", None)
+    return _one_line(name) if name else message.sender
+
+
 def _footnote_text(msg_id: str, message: Message | None) -> str:
     subject = _one_line(message.subject) if message and message.subject else "(no subject)"
     parts = [f'Email "{subject}"', _day(message.date if message else None)]
-    if not msg_id.startswith("sha256:"):  # only a real Message-ID is worth showing
-        parts.append(f"ID `{msg_id}`")
+    who = _footnote_sender(message)
+    if who:
+        parts.append(f"from {who}")
     if message is not None and message.attachments:
         parts.append("attachments: " + ", ".join(message.attachments))
     return ", ".join(parts)

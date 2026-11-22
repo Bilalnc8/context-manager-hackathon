@@ -111,3 +111,13 @@ def test_remove_seen_paragraphs_by_hash():
     text = "New: add XLSX.\n\nthe export must support csv"
     assert remove_seen_paragraphs(text, seen) == "New: add XLSX."
     assert remove_seen_paragraphs(text, set()) == text
+
+
+def test_sender_display_name_is_kept_separately():
+    from emailctx.clean import parse_eml
+
+    raw = b"From: \"Gurinder Gill\" <GillG@Gmail.com>\r\nSubject: s\r\nMessage-ID: <x@y>\r\n\r\nHi\r\n"
+    p = parse_eml(raw)
+    assert (p.sender, p.sender_name) == ("gillg@gmail.com", "Gurinder Gill")
+    bare = parse_eml(b"From: ops@globex.com\r\nSubject: s\r\n\r\nHi\r\n")
+    assert (bare.sender, bare.sender_name) == ("ops@globex.com", None)

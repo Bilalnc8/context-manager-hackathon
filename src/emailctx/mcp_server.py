@@ -231,7 +231,7 @@ def build_server(
         """Open the email or meeting notes behind a citation: `source` is a footnote number
         from get_company_context (e.g. "3" or "[^3]") or a Message-ID. Returns the text the
         pipeline read (quoted replies and signatures removed, attachment text included)."""
-        from emailctx.render.render import footnotes
+        from emailctx.render.render import footnotes, sender_label
         from emailctx.store.models import Message
 
         with rt().sessions() as s:
@@ -251,9 +251,9 @@ def build_server(
         date = m.date.strftime("%Y-%m-%d %H:%M UTC") if m.date else "undated"
         head_lines = [
             f"Subject: {m.subject or '(no subject)'}",
-            f"From: {m.sender or 'unknown'}",
+            f"From: {sender_label(m) or 'unknown'}",
             f"Date: {date}",
-            f"Source: {m.source}" + ("" if msg_id.startswith("sha256:") else f", Message-ID {msg_id}"),
+            f"Source: {m.source}",
         ]
         if m.attachments:
             head_lines.append("Attachments: " + ", ".join(m.attachments))

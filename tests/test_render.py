@@ -60,7 +60,8 @@ def test_rendered_document_shape(tmp_path):
         s.add(Company(company_id="acme", name="Acme"))
         s.add(Project(project_id="atlas", name="Atlas", company_id="acme"))
         s.add(Project(project_id="quiet", name="Quiet", company_id="acme"))  # nothing yet: omitted
-        s.add(Message(msg_id="m1@acme.com", subject="Atlas export", date=D1, source="eml", ingested_at=D1))
+        s.add(Message(msg_id="m1@acme.com", subject="Atlas export", date=D1, source="eml", ingested_at=D1,
+                      sender="mia@acme.com", sender_name="Mia Chen"))
         s.add(Message(msg_id="sha256:" + "0" * 64, subject="Re:  Atlas\n export", date=D2,
                       source="eml", ingested_at=D2))
         s.flush()
@@ -95,8 +96,8 @@ def test_rendered_document_shape(tmp_path):
         '- 2026-11-19 · **REQ-001** modified: "Export must support CSV." → '
         '"Export must support CSV and XLSX."[^2]\n'
         "\n"
-        '[^1]: Email "Atlas export", 2026-11-16, ID `m1@acme.com`\n'
-        '[^2]: Email "Re: Atlas export", 2026-11-19\n'  # no Message-ID: no ID shown
+        '[^1]: Email "Atlas export", 2026-11-16, from Mia Chen\n'  # name, never the address
+        '[^2]: Email "Re: Atlas export", 2026-11-19\n'  # no sender recorded
     )
 
 

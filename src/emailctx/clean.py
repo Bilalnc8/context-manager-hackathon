@@ -53,6 +53,7 @@ class ParsedEmail:
     thread_root: str  # first References id, else In-Reply-To, else msg_id
     references: list[str]  # References + In-Reply-To ids, oldest first
     sender: str | None  # address only, lowercased
+    sender_name: str | None = None  # From display name, e.g. "Gurinder Gill"
     to: list[str] = field(default_factory=list)
     cc: list[str] = field(default_factory=list)
     reply_to: list[str] = field(default_factory=list)
@@ -81,6 +82,15 @@ def _clean_msg_id(value: object | None) -> str | None:
 def _addresses(msg: EmailMessage, header: str) -> list[str]:
     values = [str(v) for v in msg.get_all(header, [])]
     return [addr.lower() for _name, addr in getaddresses(values) if addr]
+
+
+def _sender_name(msg: EmailMessage) -> str | None:
+    values = [str(v) for v in msg.get_all("From", [])]
+    for name, addr in getaddresses(values):
+        if addr:
+            name = " ".join(name.split()).strip("\"' ")
+            return name if name and name.lower() != addr.lower() else None
+    return None
 
 
 def _parse_date(msg: EmailMessage) -> datetime | None:
@@ -160,6 +170,7 @@ def parse_eml(raw: bytes) -> ParsedEmail:
         thread_root=refs[0] if refs else msg_id,
         references=refs,
         sender=sender,
+        sender_name=_sender_name(msg),
         to=_addresses(msg, "To"),
         cc=_addresses(msg, "Cc"),
         reply_to=_addresses(msg, "Reply-To"),

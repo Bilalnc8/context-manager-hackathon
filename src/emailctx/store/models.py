@@ -140,6 +140,7 @@ class Message(Base):
     date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     attachments: Mapped[list | None] = mapped_column(JSON, nullable=True)  # file names only
     sender: Mapped[str | None] = mapped_column(String, nullable=True)  # From header
+    sender_name: Mapped[str | None] = mapped_column(String, nullable=True)  # From display name
     body: Mapped[str | None] = mapped_column(Text, nullable=True)  # cleaned text + attachments
     source: Mapped[str] = mapped_column(String)  # eml | gmail | pasted
     ingested_at: Mapped[datetime] = mapped_column(DateTime)

@@ -215,8 +215,8 @@ def test_withdrawn_question_can_be_logged_again(h):
 def test_any_citation_can_be_opened_including_pasted_input(h):
     first = h.call("get_source", company="acme", source="[^1]")
     assert first.splitlines()[:4] == [
-        "Subject: Atlas export requirements", "From: jane@acme.com",
-        "Date: 2026-11-16 09:00 UTC", "Source: eml, Message-ID atlas-001@acme.com",
+        "Subject: Atlas export requirements", "From: Jane Doe (jane@acme.com)",
+        "Date: 2026-11-16 09:00 UTC", "Source: eml",
     ]
     assert first.endswith("the export must support CSV. Reports should load in under 2 seconds.")
     assert h.call("get_source", company="acme", source="atlas-001@acme.com") == first
