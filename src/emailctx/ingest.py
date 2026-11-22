@@ -39,6 +39,7 @@ from emailctx.clean import (
 from emailctx.config import Settings
 from emailctx.llm import LLMClient
 from emailctx.pipeline.graph import PipelineDeps, build_graph
+from emailctx.pipeline.ops import Skipped
 from emailctx.pipeline.types import AcceptedOp, AppliedChange, OpOutcome
 from emailctx.render.publish import Publisher, PublishResult, publishers_from_settings
 from emailctx.render.render import render_and_publish
@@ -76,6 +77,11 @@ class IngestResult:
     applied: list[AppliedChange] = field(default_factory=list)
     answered: list[str] = field(default_factory=list)  # question ids the email answered
     published: list[PublishResult] = field(default_factory=list)
+    # Coverage (pipeline/coverage.py): sentences extraction said change nothing, and
+    # sentences nothing accounted for (a person should look at these).
+    skipped: list[Skipped] = field(default_factory=list)
+    unaccounted: list[str] = field(default_factory=list)
+    gate_reason: str | None = None  # why the gate let the email through or stopped it
 
 
 @dataclass
@@ -312,6 +318,9 @@ def process_for_project(
         rejected=validation.rejected if validation else [],
         applied=state.get("applied", []),
         answered=state.get("answered", []),
+        skipped=validation.skipped if validation else [],
+        unaccounted=validation.unaccounted if validation else [],
+        gate_reason=state.get("gate_reason"),
     )
     if result.applied or result.answered or state.get("conflicts"):
         result.published = render_and_publish(

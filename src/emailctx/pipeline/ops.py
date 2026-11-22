@@ -33,6 +33,12 @@ class RemoveOp(BaseModel):
     evidence: str
 
 
+class ResolveOp(BaseModel):
+    op: Literal["resolve"]
+    req_id: str = Field(description="ID of the open concern or action the email closes.")
+    evidence: str = Field(description="Exact quote from the email showing it is resolved or done.")
+
+
 class AnswerOp(BaseModel):
     op: Literal["answer"]
     question_id: str = Field(description="ID of the open question the email answers, e.g. Q-001.")
@@ -45,11 +51,24 @@ class NoneOp(BaseModel):
     reason: str = ""
 
 
-Op = Annotated[AddOp | ModifyOp | RemoveOp | AnswerOp | NoneOp, Field(discriminator="op")]
+Op = Annotated[
+    AddOp | ModifyOp | RemoveOp | ResolveOp | AnswerOp | NoneOp, Field(discriminator="op")
+]
+
+
+class Skipped(BaseModel):
+    quote: str = Field(description="A sentence of the email that produced no op, copied verbatim.")
+    reason: str = Field(
+        description="Why it changes nothing, e.g. greeting, restates REQ-002, already resolved."
+    )
 
 
 class ExtractResult(BaseModel):
     ops: list[Op]
+    skipped: list[Skipped] = Field(
+        default_factory=list,
+        description="Every other sentence of the email, each with the reason it changes nothing.",
+    )
 
 
 class GateResult(BaseModel):

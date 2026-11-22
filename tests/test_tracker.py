@@ -73,7 +73,7 @@ def test_fresh_session_sees_status_of_every_item(h):
     h.call("set_item_status", company="Acme", req_id="REQ-002", status="in progress")
 
     context = h.call("get_company_context", company="acm")  # a part of the name works
-    assert "**Status:** 0 open · 1 in progress · 1 done · 0 verified" in context
+    assert "**Status:** deliverables 0 open · 1 in progress · 1 done · 0 verified" in context
     assert "- **REQ-001** [done] The export must support CSV.[^1]" in context
     assert "- **REQ-002** [in progress] Reports must load in under 2 seconds.[^1]" in context
     assert context == h.md()  # the published file is the same view
@@ -148,6 +148,7 @@ def test_client_email_answers_a_question_and_updates_the_item(h):
         "acme: applied.",
         "- REQ-001 modify: The export must support CSV, with timestamps in UTC.",
         "- Q-001 answered",
+        "Every sentence was captured or skipped with a reason.",
     ]
     gate_prompt = h.llm.calls[0][1]
     assert "<open_questions>\nQ-001 (about REQ-001): Should exported timestamps be in UTC?" in gate_prompt

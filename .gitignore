@@ -29,3 +29,7 @@ token*.json
 # Editor
 .vscode/
 .idea/
+
+# emailctx eval output (fresh store, generated files, report)
+eval/run/
+sample-eml/
