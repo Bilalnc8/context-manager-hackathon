@@ -310,3 +310,82 @@ client input: pasted into a session (add_client_input), .eml files, team Gmail s
 - **Contradictions:** the judge also returns `contradicts`. A modify that reverses the current text (not one that extends it) is applied and recorded as a `contradiction` conflict.
 - Open conflicts render under "Needs confirmation", citing both emails. `emailctx conflicts confirm C<n>` accepts the current text; `--use-other` switches to the other email's version, cited to that email.
 - **Models and thresholds** live in `config.yaml`. Extraction defaults to `claude-opus-5-5`; the gate and the judge default to `claude-haiku-5-5`.
+
+## Google auth: setup and handoff
+
+There are two separate Google setups. They can share one Google Cloud project, as two OAuth clients:
+
+| | 1. Inbox reading | 2. MCP server user login |
+|---|---|---|
+| Purpose | emailctx reads client email from one shared inbox | Teammates prove who they are when Claude connects |
+| OAuth client type | Desktop app (`client_secret.json`) | Web application |
+| Scopes | `gmail.readonly` | `openid`, `email` |
+| Who signs in | The shared inbox, once, with `emailctx auth` | Every teammate, on first connect from Claude |
+| Status | Built | Not built yet (spec below) |
+| In production | Replaced by email forwarding to `/inbound` (not built yet) | Still needed |
+
+### 1. Inbox reading: set up `emailctx auth` (built)
+
+1. In [Google Cloud Console](https://console.cloud.google.com), create a project. Any Google account can own it; it doesn't have to be the inbox's.
+2. APIs & Services → Library → **Gmail API** → Enable.
+3. OAuth consent screen (Google Auth Platform):
+   - Audience: **External** and leave it in **Testing**, then add the inbox address under **Test users**. If the inbox is on Google Workspace and the project was created in that Workspace, choose **Internal** instead: no test-user list and no 7-day token expiry.
+   - Branding: app name `emailctx`, plus a support email.
+4. Clients → Create client → **Desktop app** → download the JSON and save it in the repo root as `client_secret.json`. It's gitignored; `google.client_secrets` in `config.yaml` sets the path, relative to the config file.
+5. With Drive output off, remove `drive.file` from `google.scopes` in `config.yaml`, so the consent screen asks only for Gmail.
+6. Run `emailctx auth`. A browser opens: sign in as the inbox, click through "Google hasn't verified this app" (expected in Testing), and allow read-only Gmail access. The token (with its refresh token) goes into the OS keyring; `emailctx auth --logout` removes it.
+7. Run `emailctx serve --poll-minutes 1`. The server checks the inbox at start, then every minute, and logs each change.
+
+Things to know:
+
+- `emailctx auth` and `emailctx serve` must run on the same machine as the same OS user, because the token lives in that user's keyring.
+- With External/Testing, Google expires the refresh token after 7 days. The poller then logs "not signed in"; run `emailctx auth` again.
+- Test emails sent from a `@gmail.com` address can't be matched to a client by domain. List that exact address under the company's `contacts` in `registry.yaml`, or the emails go to the review queue.
+- The first poll reads at most `gmail.backfill_max` (200) of the most recent matching emails. After that, only new mail.
+
+### 2. MCP server user login (to build)
+
+**Goal.** Claude Code, Claude Desktop or claude.ai connects to `emailctx serve`, the user signs in with Google once in a browser, and only accounts from allowed domains get in. Every write then records the user's email instead of `agent`.
+
+**Why the server sits in the middle.** When an MCP client like Claude meets a server that requires login, it discovers the server's OAuth endpoints and registers itself automatically (dynamic client registration). Google doesn't support that, so Claude can't use Google directly. emailctx itself acts as the OAuth authorization server for Claude and hands only the sign-in step to Google:
+
+```
+Claude ──► emailctx /mcp: 401 + where to log in
+Claude ──► emailctx /register: Claude registers itself (stored in SQLite)
+Claude ──► emailctx /authorize ──► redirect to Google sign-in (openid email, state, PKCE)
+                                        │ user picks their Google account
+emailctx /oauth/google/callback ◄───────┘ code
+   exchange code with Google, verify the ID token, check email_verified and the domain
+   ──► issue an emailctx authorization code, redirect to Claude's callback
+Claude ──► emailctx /token: emailctx access + refresh tokens
+Claude ──► every /mcp call: Bearer token, checked on each request; the user is known
+```
+
+**Google Cloud setup** (same project as above):
+
+1. Clients → Create client → **Web application**.
+2. Authorized redirect URIs: `http://localhost:8000/oauth/google/callback` for local testing, and `https://<server-host>/oauth/google/callback` once deployed.
+3. Scopes: only `openid` and `email` (basic scopes; no Google review).
+4. While the project also holds the Gmail client in External/Testing, every teammate who signs in must be added as a test user. In production, forwarding replaces the Gmail client, so the project asks only for basic scopes and can be published to External with no review (the server's domain check keeps outsiders out), or set to Internal on Workspace.
+5. Proposed environment variables: `EMAILCTX_GOOGLE_CLIENT_ID`, `EMAILCTX_GOOGLE_CLIENT_SECRET`, `EMAILCTX_ALLOWED_DOMAINS` (comma-separated, e.g. `yourcompany.com`), `EMAILCTX_PUBLIC_URL` (the issuer URL, e.g. `https://mcp.yourcompany.com`). Keep secrets in `.env` (gitignored), never in `config.yaml`.
+
+**Where it plugs in:**
+
+- `build_server()` in `src/emailctx/mcp_server.py` passes extra keyword arguments to `MCPServer(...)`. Give it `auth_server_provider=<GoogleProxyProvider>` and `auth=AuthSettings(issuer_url=..., resource_server_url=..., client_registration_options=ClientRegistrationOptions(enabled=True))` from `mcp.server.auth.settings`. The SDK then serves the discovery metadata, `/register`, `/authorize` and `/token` itself.
+- Write one class implementing `OAuthAuthorizationServerProvider` from `mcp/server/auth/provider.py`:
+  - `register_client` / `get_client`: save and look up Claude's registration.
+  - `authorize`: remember the pending request (Claude's redirect URI, its PKCE challenge, its state) under a random key, and return a Google sign-in URL with that key as Google's `state`.
+  - `load_authorization_code` / `exchange_authorization_code`: issue emailctx access and refresh tokens for a code from the callback.
+  - `load_refresh_token` / `exchange_refresh_token`, `load_access_token`, `revoke_token`.
+- Add the Google callback with `server.custom_route("/oauth/google/callback", methods=["GET"])`. Exchange Google's code at `https://oauth2.googleapis.com/token`, verify the ID token with `google.oauth2.id_token.verify_oauth2_token` (`google-auth` is already a dependency), require `email_verified`, check the email's domain against `EMAILCTX_ALLOWED_DOMAINS`, then create an emailctx authorization code and redirect to Claude's callback with Claude's original state.
+- Store clients, pending authorizations, codes and tokens in SQLite: new tables in `src/emailctx/store/models.py`, so a restart doesn't log everyone out. Store token hashes, not raw tokens.
+- Identity: `current_user_default()` in `mcp_server.py` already reads the request's token through `get_access_token()`. Put the user's email on the token as `subject` (or change that function), and every `set_item_status`, `log_question` and `record_answer` records the real user.
+- CLI: add `--auth google` to `emailctx serve` in `src/emailctx/cli.py`. Keep no-auth as the default so the local demo works unchanged.
+
+**Done when:**
+
+- In Claude Code, `claude mcp add --transport http emailctx http://localhost:8000/mcp`, then `/mcp` → Authenticate, opens Google sign-in; after signing in, the tools work.
+- An account outside the allowed domains is refused at the callback.
+- After a status change, `list_items` shows `by <user email>`.
+- Restarting the server doesn't sign anyone out.
+- `emailctx serve` without `--auth` behaves as before, and `pytest` passes, with new tests for the provider using a fake Google token exchange (see `tests/test_tracker.py` for how the server is driven in tests).

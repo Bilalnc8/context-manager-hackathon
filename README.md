@@ -6,6 +6,7 @@ Client emails and meeting notes go through a pipeline that pulls out requirement
 
 - Challenge brief: [docs/challenge-8.md](docs/challenge-8.md)
 - System design: [docs/DESIGN.md](docs/DESIGN.md)
+- Google setup, for inbox reading (`emailctx auth`) and MCP server login: [Google auth: setup and handoff](docs/DESIGN.md#google-auth-setup-and-handoff)
 
 ## Setup
 
