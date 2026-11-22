@@ -16,9 +16,10 @@ def test_initial_email_creates_requirements(seeded):
     assert all(r.source_ids == ["atlas-001@acme.com"] for r in reqs)
     assert [c.op for c in seeded.change_log()] == ["add", "add"]
     md = seeded.md_bytes().decode()
-    assert "## atlas" in md
+    assert "## atlas" not in md  # one project per company: no project heading
     assert "- **REQ-001** The export must support CSV.[^1]" in md
-    assert "### Non-functional" in md
+    assert "\n## Non-functional\n" in md
+    assert "- 2026-11-16 · **REQ-001** added: The export must support CSV.[^1]" in md
     assert '[^1]: Email "Atlas export requirements", 2026-11-16, ID `atlas-001@acme.com`' in md
 
 
@@ -243,7 +244,7 @@ def test_no_email_content_is_stored(seeded, tmp_path):
 # Companies -------------------------------------------------------------------------------
 
 
-def test_one_file_per_company_with_a_section_per_project(seeded):
+def test_one_file_per_company(env):
     llm = RecordedLLM(
         {
             "gate": [{"has_change": True}],
@@ -251,15 +252,27 @@ def test_one_file_per_company_with_a_section_per_project(seeded):
                                   "category": "ui", "evidence": "must show weekly totals"}]}],
         }
     )
-    result, _ = seeded.ingest("gmail_html_reply", llm, project="beacon")
+    env.ingest("atlas_01_initial", "atlas_01_initial")
+    result, _ = env.ingest("gmail_html_reply", llm, project="beacon", company="globex")
     assert result.outcome == "applied"
-    assert [p.destination for p in result.published] == [str(seeded.md_path("acme"))]
+    assert [p.destination for p in result.published] == [str(env.md_path("globex"))]
+    assert sorted(p.name for p in env.settings.output.local_dir.iterdir()) == ["acme", "globex"]
+    assert "Dashboard must show weekly totals" in env.md_bytes("globex").decode()
+    assert "Dashboard" not in env.md_bytes("acme").decode()
 
-    md = seeded.md_bytes().decode()
-    assert md.index("## atlas") < md.index("## beacon") < md.index("## Changelog")
-    assert "- **REQ-001** Dashboard must show weekly totals.[^2]" in md  # beacon's own REQ-001
-    assert "2026-11-21 · beacon · **REQ-001** added" in md
-    assert sorted(p.name for p in seeded.settings.output.local_dir.iterdir()) == ["acme"]
+
+def test_second_project_for_a_company_is_refused(seeded):
+    from emailctx.ingest import IngestError
+
+    with pytest.raises(IngestError, match="already has project 'atlas'"):
+        seeded.ingest("gmail_html_reply", llm=None, project="beacon", company="acme")
+    assert seeded.snapshot()["counts"]["messages"] == 1  # nothing recorded
+
+
+def test_company_alone_means_its_project(seeded):
+    llm = RecordedLLM({"gate": [{"has_change": False}]})
+    result, _ = seeded.ingest("atlas_05_meeting", llm, project=None, company="acme")
+    assert (result.route.step, result.project_id) == ("manual", "atlas")
 
 
 def test_new_project_needs_a_company(env):

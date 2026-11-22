@@ -1,8 +1,8 @@
 """Embedder interface.
 
-Phase 1 ships only the no-op prefilter: every requirement is a candidate for the judge.
-Phase 4 adds a sentence-transformers implementation, used both for routing and to narrow
-the dedupe judge's input to the top-k most similar requirements.
+Only the no-op prefilter exists: every requirement is a candidate for the dedupe judge.
+The interface stays so a real embedder (e.g. sentence-transformers) can narrow the
+judge's input to the top-k most similar requirements if projects grow large.
 """
 
 from __future__ import annotations

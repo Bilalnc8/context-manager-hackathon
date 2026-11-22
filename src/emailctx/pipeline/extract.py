@@ -23,6 +23,10 @@ Every add, modify and remove needs evidence: a quote copied verbatim from the em
 that shows the change on its own. Evidence that does not appear in the email is \
 rejected, so copy it exactly; do not paraphrase or join separate sentences.
 
+Text after a line like "--- Attachment: <name> ---" comes from that attachment (for \
+example a meeting-summary PDF) and is part of the email: decisions recorded there count, \
+and evidence can be quoted from it the same way.
+
 Restating, confirming or rewording a current requirement is not a change; return none \
 for it. Use only req_ids from the current list. Pick each category from: {categories}.
 

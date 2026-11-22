@@ -58,3 +58,10 @@ class JudgeResult(BaseModel):
     same_meaning: bool = Field(
         description="True if the proposed text means the same as duplicate_of's text."
     )
+    contradicts: bool = Field(
+        default=False,
+        description=(
+            "True if the proposed text reverses or conflicts with duplicate_of's text "
+            "rather than extending or refining it."
+        ),
+    )

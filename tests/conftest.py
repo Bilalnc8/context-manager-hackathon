@@ -53,7 +53,7 @@ class Env:
         self,
         eml: str,
         llm: str | RecordedLLM | None = None,
-        project: str = "atlas",
+        project: str | None = "atlas",
         company: str | None = "acme",
     ) -> tuple[IngestResult, RecordedLLM]:
         """Ingest tests/fixtures/eml/<eml>.eml with recorded responses from llm/<llm>.json.

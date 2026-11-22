@@ -2,15 +2,44 @@
 
 db_path: emailctx.db
 
-# One context.md per company, written to every destination configured here.
+# One <Company>.md per company, written to every destination configured here.
 # Each destination is written only when the rendered file's SHA-256 differs.
 output:
-  local_dir: companies          # companies/<company_id>/context.md; null to disable
+  # Google Drive: "<root_folder>/<Company>/" holds <Company>.md, Emails/ (a .txt copy
+  # of every email routed to the company) and Documents/ (their attachments).
+  drive:
+    enabled: true
+    root_folder: Client Context
+  local_dir: companies          # local copy of the .md files; null to disable
+  git_commit: false             # commit each change in local_dir (its own git repo)
   s3:
-    bucket: null                # set to enable: s3://<bucket>/<prefix><company_id>/context.md
-    prefix: ""                  # e.g. "context/"
-    region: null                # null = boto3 default
-    profile: null               # AWS profile name; null = default credential chain
+    bucket: null                # set to also publish to s3://<bucket>/<prefix><company_id>/context.md
+    prefix: ""
+    region: null
+    profile: null
+
+google:
+  # OAuth "Desktop app" client downloaded from Google Cloud Console (gitignored).
+  client_secrets: client_secret.json
+  # Gmail is read-only. drive.file lets the app manage only the folders and files it
+  # creates itself, nothing else in your Drive. Any other scope is refused.
+  scopes:
+    - https://www.googleapis.com/auth/gmail.readonly
+    - https://www.googleapis.com/auth/drive.file
+  # The refresh token is kept in the OS keyring (Windows Credential Manager, macOS
+  # Keychain, Secret Service), never in a file or in logs.
+
+gmail:
+  # Gmail search for tracked mail. null = built from the registry: mail from/to/cc any
+  # company domain or contact, subject keywords, and meeting bots. Set it to e.g.
+  # "label:clients" to also discover new clients (unknown domains go to review).
+  query: null
+  backfill_max: 200             # cap for a plain backfill (used when Drive is off)
+
+# A company with no .md in its Drive folder gets one built from this much past mail.
+bootstrap:
+  days: 100
+  max_per_company: 500
 
 models:
   gate: claude-haiku-5-5      # cheap relevance check
@@ -34,10 +63,44 @@ fallbacks:
   extract: default
   judge: null
 
+routing:
+  # Free mail providers say nothing about the company. Addresses on them match only
+  # through company_contacts (full address).
+  personal_providers:
+    - gmail.com
+    - googlemail.com
+    - outlook.com
+    - hotmail.com
+    - live.com
+    - msn.com
+    - yahoo.com
+    - icloud.com
+    - me.com
+    - aol.com
+    - proton.me
+    - protonmail.com
+  # Meeting-summary bots. Their domain says nothing about the client, so their emails
+  # are matched on company/project names (subject, body, attachment names).
+  meeting_bot_domains:
+    - fireflies.ai
+    - otter.ai
+    - fathom.video
+    - read.ai
+    - tldv.io
+    - meetgeek.ai
+    - avoma.com
+    - gong.io
+    - grain.com
+    - krisp.ai
+    - tactiq.io
+  # Trust an external sender's domain only when Authentication-Results shows dmarc=pass.
+  require_dmarc_pass: false
+
 pipeline:
   max_extract_retries: 1      # validate can send rejected ops back to extract this many times
   min_evidence_chars: 5       # normalized evidence shorter than this is rejected
-  judge_top_k: 20             # candidates the judge sees (prefilter is a no-op until Phase 4)
+  judge_top_k: 20             # candidates the duplicate judge sees
+  max_attachment_chars: 100000  # attachment text (PDFs etc.) read per email
 
 # Fixed category set. Anything else the LLM returns is mapped to "other".
 # Order here is the section order in context.md.

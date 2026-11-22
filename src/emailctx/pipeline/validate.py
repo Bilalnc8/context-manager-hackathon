@@ -12,6 +12,12 @@ Per op, in order:
    duplicate with the same meaning -> dropped; duplicate with a different meaning ->
    converted to a modify of that requirement.
 
+Conflicts (latest wins, a person confirms):
+6. modify/remove from an email dated before the requirement's last change -> stale:
+   not applied, recorded under "Needs confirmation".
+7. modify the judge says contradicts the current text -> applied (it is the latest)
+   and recorded under "Needs confirmation".
+
 Rejected ops can be sent back to extraction for a retry. Dropped ops are legitimate
 no-ops and are not retried.
 """
@@ -19,6 +25,7 @@ no-ops and are not retried.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from emailctx.config import Settings
 from emailctx.llm import LLMClient
@@ -34,7 +41,11 @@ Set duplicate_of to the ID of the existing requirement that covers the same thin
 the proposed text, or null if none does. Set same_meaning to true only if the proposed \
 text requires exactly what that requirement already requires, just worded differently. \
 If it adds, drops or changes anything (scope, values, formats, limits, deadlines), \
-same_meaning is false. With duplicate_of null, same_meaning is false."""
+same_meaning is false. With duplicate_of null, same_meaning is false.
+
+Set contradicts to true when the proposed text reverses or conflicts with that \
+requirement (e.g. "CSV only" vs "no CSV, use PDF"; "90 days" vs "30 days"), and false \
+when it only extends or refines it (e.g. "CSV" vs "CSV and XLSX")."""
 
 
 def coerce_category(category: str | None, allowed: Sequence[str]) -> str:
@@ -63,8 +74,15 @@ def validate_ops(
     llm: LLMClient,
     embedder: Embedder,
     settings: Settings,
+    source_date: datetime | None = None,
 ) -> ValidationResult:
     result = ValidationResult()
+
+    def is_stale(req: ReqView) -> bool:
+        return source_date is not None and req.updated_at is not None and source_date < req.updated_at
+
+    def keep(op: AcceptedOp, target: ReqView) -> None:
+        (result.stale if is_stale(target) else result.accepted).append(op)
     source_norm = normalize_match(source_text)
     min_chars = settings.pipeline.min_evidence_chars
     active = {r.req_id: r for r in current}
@@ -100,9 +118,7 @@ def validate_ops(
 
         if isinstance(op, RemoveOp):
             targeted.add(op.req_id)
-            result.accepted.append(
-                AcceptedOp("remove", op.req_id, None, None, op.evidence, msg_id)
-            )
+            keep(AcceptedOp("remove", op.req_id, None, None, op.evidence, msg_id), active[op.req_id])
             continue
 
         text = clean_requirement_text(op.text)
@@ -122,8 +138,10 @@ def validate_ops(
                 continue
             category = coerce_category(op.category, settings.categories) if op.category else cur.category
             targeted.add(op.req_id)
-            result.accepted.append(
-                AcceptedOp("modify", op.req_id, text, category, op.evidence, msg_id)
+            keep(
+                AcceptedOp("modify", op.req_id, text, category, op.evidence, msg_id,
+                           contradicts=verdict.contradicts),
+                cur,
             )
             continue
 
@@ -150,8 +168,10 @@ def validate_ops(
                     drop(op, f"{dup} already changed by an earlier op in this email")
                     continue
                 targeted.add(dup)
-                result.accepted.append(
-                    AcceptedOp("modify", dup, text, category, op.evidence, msg_id, "add")
+                keep(
+                    AcceptedOp("modify", dup, text, category, op.evidence, msg_id, "add",
+                               contradicts=verdict.contradicts),
+                    active[dup],
                 )
                 continue
 

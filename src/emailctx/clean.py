@@ -23,6 +23,7 @@ signature block (at most 6 short lines).
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -39,6 +40,13 @@ from emailctx.textnorm import normalize_requirement
 
 
 @dataclass(frozen=True)
+class Attachment:
+    filename: str
+    content_type: str
+    data: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
 class ParsedEmail:
     msg_id: str  # RFC Message-ID without <>, or "sha256:<hex>" fallback
     rfc_message_id: str | None
@@ -52,6 +60,9 @@ class ParsedEmail:
     date: datetime | None = None  # naive UTC
     body_text: str = ""  # decoded body before stripping
     cleaned_text: str = ""
+    dmarc_pass: bool | None = None  # None: no Authentication-Results dmarc verdict
+    labels: tuple[str, ...] = ()  # Gmail labels (filled by Gmail sync)
+    attachments: tuple[Attachment, ...] = ()
 
 
 _MSG_ID = re.compile(r"<([^<>\s]+)>")
@@ -85,6 +96,20 @@ def _parse_date(msg: EmailMessage) -> datetime | None:
     if dt.tzinfo is not None:
         dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt
+
+
+_DMARC = re.compile(r"\bdmarc=(\w+)", re.IGNORECASE)
+
+
+def _dmarc_pass(msg: EmailMessage) -> bool | None:
+    verdicts = [
+        m.group(1).lower()
+        for h in msg.get_all("Authentication-Results", [])
+        for m in _DMARC.finditer(str(h))
+    ]
+    if not verdicts:
+        return None
+    return all(v == "pass" for v in verdicts)
 
 
 def _decode_part(part: EmailMessage) -> str:
@@ -142,7 +167,97 @@ def parse_eml(raw: bytes) -> ParsedEmail:
         date=_parse_date(msg),
         body_text=body,
         cleaned_text=cleaned,
+        dmarc_pass=_dmarc_pass(msg),
+        attachments=_attachments(msg),
     )
+
+
+# --- Attachments ------------------------------------------------------------------
+
+
+def _attachments(msg: EmailMessage) -> tuple[Attachment, ...]:
+    out: list[Attachment] = []
+    for i, part in enumerate(msg.iter_attachments(), start=1):
+        ctype = part.get_content_type()
+        if ctype == "message/rfc822":
+            inner = part.get_payload()
+            inner = inner[0] if isinstance(inner, list) and inner else inner
+            data = inner.as_bytes() if hasattr(inner, "as_bytes") else b""
+        else:
+            data = part.get_payload(decode=True) or b""
+        name = part.get_filename()
+        if not name:
+            ext = mimetypes.guess_extension(ctype) or (".eml" if ctype == "message/rfc822" else ".bin")
+            name = f"attachment-{i}{ext}"
+        out.append(Attachment(_safe_filename(name), ctype, data))
+    return tuple(out)
+
+
+_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+
+def _safe_filename(name: str, limit: int = 120) -> str:
+    name = _UNSAFE.sub("-", name).strip(" .") or "attachment"
+    if len(name) <= limit:
+        return name
+    stem, dot, ext = name.rpartition(".")
+    return (stem[: limit - len(ext) - 1] + "." + ext) if dot and len(ext) <= 8 else name[:limit]
+
+
+def attachment_text(att: Attachment) -> str | None:
+    """Readable text of a PDF or text attachment, or None for anything else."""
+    lower = att.filename.lower()
+    if att.content_type == "application/pdf" or lower.endswith(".pdf"):
+        try:
+            from io import BytesIO
+
+            from pypdf import PdfReader
+
+            reader = PdfReader(BytesIO(att.data))
+            return "\n".join((page.extract_text() or "") for page in reader.pages).strip() or None
+        except Exception:
+            return None  # encrypted, scanned or broken PDF: stored, not read
+    if att.content_type in ("text/plain", "text/markdown", "text/csv") or lower.endswith(
+        (".txt", ".md", ".csv")
+    ):
+        return att.data.decode("utf-8", errors="replace").strip() or None
+    return None
+
+
+def with_attachment_text(
+    cleaned: str, attachments: tuple[Attachment, ...], max_chars: int
+) -> tuple[str, list[str]]:
+    """Append readable attachment text to the cleaned body (the text extraction sees and
+    evidence is checked against). Returns the text and the attachments that were read."""
+    parts, used, budget = [cleaned], [], max_chars
+    for att in attachments:
+        text = attachment_text(att)
+        if not text or budget <= 0:
+            continue
+        if len(text) > budget:
+            text = text[:budget] + "\n[... attachment text cut at the configured limit ...]"
+        budget -= len(text)
+        parts.append(f"--- Attachment: {att.filename} ---\n{text}")
+        used.append(att.filename)
+    return "\n\n".join(p for p in parts if p), used
+
+
+def email_copy_text(parsed: ParsedEmail) -> str:
+    """The readable copy of an email stored in the company's Drive folder."""
+    date = parsed.date.strftime("%Y-%m-%d %H:%M UTC") if parsed.date else "unknown"
+    lines = [
+        f"From: {parsed.sender or ''}",
+        f"To: {', '.join(parsed.to)}",
+    ]
+    if parsed.cc:
+        lines.append(f"Cc: {', '.join(parsed.cc)}")
+    lines += [f"Date: {date}", f"Subject: {parsed.subject}"]
+    if parsed.rfc_message_id:
+        lines.append(f"Message-ID: <{parsed.rfc_message_id}>")
+    if parsed.attachments:
+        lines.append(f"Attachments: {', '.join(a.filename for a in parsed.attachments)}")
+    body = parsed.body_text.replace("\r\n", "\n").strip()
+    return "\n".join(lines) + "\n\n" + body + "\n"
 
 
 # --- HTML to text ----------------------------------------------------------------

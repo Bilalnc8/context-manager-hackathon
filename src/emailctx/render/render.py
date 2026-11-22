@@ -1,7 +1,9 @@
 """Deterministic rendering of one context.md per company from the store.
 
-Layout: a section per project (by project_id), requirements grouped by category in
-config order and sorted by numeric ID, then a company-wide changelog. Each requirement
+Layout: each company has one project, so the file is the project's requirements grouped
+by category in config order and sorted by numeric ID, then "Needs confirmation" and the
+changelog. (Should a company ever hold several projects, each gets its own section and
+changelog lines name the project.) Each requirement
 and changelog entry cites its source emails as markdown footnotes:
 
     [^1]: Email "Atlas export requirements", 2026-11-16, ID `atlas-001@acme.com`
@@ -24,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from emailctx.config import Settings
 from emailctx.render.publish import Publisher, PublishResult
-from emailctx.store.models import ChangeLog, Company, Message, Project, Requirement
+from emailctx.store.models import ChangeLog, Company, Conflict, Message, Project, Requirement
 
 _TEMPLATES = Path(__file__).parent / "templates"
 _VERBS = {"add": "added", "modify": "modified", "remove": "removed"}
@@ -56,6 +58,8 @@ def _footnote_text(msg_id: str, message: Message | None) -> str:
     parts = [f'Email "{subject}"', _day(message.date if message else None)]
     if not msg_id.startswith("sha256:"):  # only a real Message-ID is worth showing
         parts.append(f"ID `{msg_id}`")
+    if message is not None and message.attachments:
+        parts.append("attachments: " + ", ".join(message.attachments))
     return ", ".join(parts)
 
 
@@ -80,9 +84,19 @@ def render_company(session: Session, company_id: str, settings: Settings) -> str
         .where(ChangeLog.project_id.in_(project_ids))
         .order_by(ChangeLog.change_id)
     ).all()
+    conflicts = session.scalars(
+        select(Conflict)
+        .where(Conflict.project_id.in_(project_ids), Conflict.status == "open")
+        .order_by(Conflict.conflict_id)
+    ).all()
 
     # Footnotes: every cited email, numbered by (date, msg_id).
-    cited = {m for r in reqs for m in r.source_ids} | {c.source_id for c in changes}
+    cited = (
+        {m for r in reqs for m in r.source_ids}
+        | {c.source_id for c in changes}
+        | {c.other_source_id for c in conflicts}
+        | {c.kept_source_id for c in conflicts if c.kept_source_id}
+    )
     messages = {
         m.msg_id: m
         for m in session.scalars(select(Message).where(Message.msg_id.in_(cited)))
@@ -140,10 +154,34 @@ def render_company(session: Session, company_id: str, settings: Settings) -> str
         for msg_id, n in sorted(numbers.items(), key=lambda kv: kv[1])
     ]
 
+    single = len(project_blocks) <= 1  # one project per company: no project headings
+    needs_confirmation = []
+    for c in conflicts:
+        kept = f'"{c.kept_text}"' + (refs([c.kept_source_id]) if c.kept_source_id else "")
+        where = "" if single else f"{project_names[c.project_id]} · "
+        head = f"**C{c.conflict_id}** · {where}**{c.req_id}**"
+        if c.kind == "contradiction":
+            body = (
+                f'now {kept}, which contradicts the earlier "{c.other_text}"'
+                f"{refs([c.other_source_id])}. The newer email won."
+            )
+        elif c.other_text is None:
+            body = (
+                f"an older email asks to remove it{refs([c.other_source_id])}, "
+                f"but a newer one set {kept}. The newer email won."
+            )
+        else:
+            body = (
+                f'an older email says "{c.other_text}"{refs([c.other_source_id])}, '
+                f"but a newer one set {kept}. The newer email won."
+            )
+        needs_confirmation.append(f"{head}: {body}")
+
     text = _env.get_template("context.md.j2").render(
         company={"company_id": company.company_id, "name": company.name},
         projects=project_blocks,
-        needs_confirmation=[],  # Phase 5
+        single=single,
+        needs_confirmation=needs_confirmation,
         changelog=changelog,
         sources=sources,
     )
@@ -151,7 +189,12 @@ def render_company(session: Session, company_id: str, settings: Settings) -> str
 
 
 def render_and_publish(
-    session: Session, company_id: str, settings: Settings, publishers: Sequence[Publisher]
+    session: Session,
+    company_id: str,
+    settings: Settings,
+    publishers: Sequence[Publisher],
+    message: str = "",
 ) -> list[PublishResult]:
+    """Render and hand the file to every publisher. `message` describes the change."""
     content = render_company(session, company_id, settings)
-    return [p.publish(company_id, content) for p in publishers]
+    return [p.publish(company_id, content, message) for p in publishers]

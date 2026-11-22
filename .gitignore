@@ -7,7 +7,9 @@ __pycache__/
 build/
 dist/
 
-# Local state
+# Local state and generated output (companies/ may be its own git repo)
+companies/
+projects/
 *.db
 *.db-journal
 *.sqlite

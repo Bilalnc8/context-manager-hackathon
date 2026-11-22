@@ -4,9 +4,9 @@ Nov 21, 2026 · @mustafa
 
 ## Overview
 
-The system reads a connected Gmail account (and Google Drive), sorts each email into the right project, and keeps one `context.md` per company describing the requirements of each of its projects. The files are published to an S3 bucket (and optionally a local folder). A file changes only when a requirement is added, modified or removed.
+The system reads a connected Gmail account, sorts each email into the right company (each company has exactly one project), and keeps one `<Company>.md` per company describing its requirements. Each company has a Google Drive folder holding that file, a readable copy of every email routed to the company, and those emails' attachments (e.g. meeting-summary PDFs). A company's first file is built from the last 100 days of its mail; after that the file changes only when a requirement is added, modified or removed.
 
-Emails are never stored. Each one is cleaned and checked for requirement changes in memory; only the resulting requirement changes and citation metadata (email ID, subject, date) are kept.
+The requirements database holds no email bodies: emails are checked for requirement changes in memory, and their copies live only in the company's Drive folder.
 
 **Core principle:** the LLM never writes the markdown. It only proposes structured changes to a requirements store. Code validates those changes, and a deterministic template renders the `.md` from the store. If no material change passes validation, the rendered output is byte-identical and the file is not touched.
 
@@ -53,8 +53,8 @@ Use direct Google APIs where the pipeline has to be deterministic, and Google Wo
 Auth:
 
 - One Google Cloud project with the Gmail and Drive APIs enabled, plus the Gmail and Drive MCP services if you use the official MCP servers
-- OAuth 2.0 with read-only scopes: `gmail.readonly`, `drive.readonly`
-- Refresh token stored encrypted
+- OAuth 2.0: `gmail.readonly`, plus `drive.file` (the app can only see and edit the folders and files it created itself)
+- Refresh token stored encrypted (OS keyring)
 - MCP tools can also be called straight from code without an LLM (e.g. langchain-mcp-adapters). Check the server's tool list before relying on it for sync.
 
 ## Ingestion
@@ -81,7 +81,8 @@ Stripping quoted replies matters more than it looks. Without it, every reply re-
 - Decode MIME, convert HTML to text
 - Strip quoted replies (`On ... wrote:`, `>` lines) and signatures
 - Extract text from PDF and doc attachments if requirements live there
-- Keep the cleaned text in memory only: the validation step checks evidence quotes against it, then it is discarded. To catch quoted history in later replies, only SHA-256 hashes of each cleaned paragraph are stored per thread.
+- Text of PDF and text attachments is appended to the cleaned body (`--- Attachment: <name> ---`), so decisions in meeting summaries count and their quotes pass the evidence check.
+- Keep the cleaned text in memory only: the validation step checks evidence quotes against it, then it is discarded (the email's copy lives in Drive, not in the database). To catch quoted history in later replies, only SHA-256 hashes of each cleaned paragraph are stored per thread.
 
 ## Project routing
 
@@ -189,7 +190,8 @@ SQLite is the source of truth. The `.md` files are views of it. Postgres works t
 | project_rules | project_id, rule_type (participant, keyword, thread), value | Deterministic routing rules, grown from review corrections |
 | thread_assignments | thread_id, project_id | Thread inheritance |
 | routing_log | msg_id, company_id, project_id, step, confidence, timestamp | Every routing decision and the step that made it |
-| review_queue | msg_id, kind (project, new company), candidates, status | Low-confidence emails and unknown domains waiting for a person |
+| review_queue | msg_id, kind (project, new company), candidates, reason, source_ref, status | Low-confidence emails and unknown domains waiting for a person; the email is re-read from source_ref (Gmail or file) |
+| conflicts | project_id, req_id, kind (contradiction, stale), kept_text, other_text, kept_source_id, other_source_id, status | "Needs confirmation" items |
 | segments | segment_id, msg_id, project_id | Which projects a message was routed to (segment text stays in memory) |
 | requirements | req_id, project_id, text, category, status, version, source_ids, updated_at | Current requirements per project |
 | change_log | req_id, op, old_text, new_text, source_id, timestamp | History behind every change |
@@ -222,9 +224,9 @@ Gmail sync comes before routing so that real synced emails can serve as routing 
 1. Core pipeline on local `.eml` files for one project: clean, gate, extract, validate (evidence check, reword/dedupe judge), store, render
 2. Gmail: OAuth, backfill, incremental sync with `historyId`, idempotency
 3. Company and project registry, routing cascade steps 1–4 (thread, explicit signals, company match, participants), review queue
-4. Embedding + LLM routing (top 3 candidates), multi-project segmentation, routing log; embeddings also prefilter the dedupe judge
+4. ~~Embedding + LLM routing, multi-project segmentation~~ Dropped: routing stays rule-based. The email's domain identifies the company and its project; no classifier runs. Emails the rules can't place go to the review queue.
 5. Git commit per changed `context.md`, conflict flagging under "Needs confirmation"
-6. Drive as a second source; MCP tools for the extraction agent
+6. Drive folder per company (the `.md`, email copies, attachments), first build from the last 100 days, meeting-summary PDFs read as part of their email. Still open: MCP tools for the extraction agent
 
 ### Risks
 
@@ -247,7 +249,44 @@ Gmail sync comes before routing so that real synced emails can serve as routing 
 - **Message IDs.** The RFC `Message-ID` header is the dedupe key (`msg_id`). Gmail's own message ID lives in its own column. If `Message-ID` is missing, `msg_id` falls back to a SHA-256 of from + date + subject + cleaned body.
 - **Requirement IDs** are assigned by code (`REQ-001`, `REQ-002`, … per project) and never reused. The LLM never picks the ID for an `add`.
 - **Remove** sets `status = removed`; rows are never deleted, so history and citations survive.
-- **No email storage.** Email bodies, addresses and evidence quotes are never persisted. Evidence quotes are validated against the in-memory email, then discarded; the citation kept is the email's ID (when it has a Message-ID), subject and date.
-- **One file per company.** Requirements stay per project in the store (IDs are per project, so each project section has its own REQ-001); rendering combines a company's projects into one file. `ingest-file` needs `--company` the first time it sees a project.
-- **Output.** S3 is enabled by setting `output.s3.bucket` in config; credentials come from boto3's standard chain and are never logged. Turning on bucket versioning gives history and rollback.
+- **Where emails live.** The database never holds email bodies, addresses or evidence quotes. A readable `.txt` copy of every email routed to a company (headers, then the full body) and its attachments are stored in that company's Drive folder. Emails waiting in review are not copied until a person assigns them (their company is unknown). Evidence quotes are validated in memory and discarded; citations are the email's ID (when it has a Message-ID), subject, date and attachment names.
+- **One project per company, one file per company.** Each company has exactly one project; the registry and the CLI refuse a second one. So a company's `context.md` is simply its project's requirements (categories as `##` sections, no project heading). `--company` alone is enough on `ingest-file` and `review assign`: it means the company's project, created with the company's id and name if needed.
+- **Output.** Google Drive is the main destination (`output.drive`), described below. S3 (optional) is enabled by setting `output.s3.bucket` in config; credentials come from boto3's standard chain and are never logged. Turning on bucket versioning gives history and rollback. Each S3 object carries a `change` metadata line describing the change and its source email. Optionally (`output.git_commit`), the local output folder is its own git repo with one commit per changed file, e.g. `atlas: REQ-001 modify (email <id>, 2026-11-19)`.
+
+### Gmail (Phase 2)
+
+- **Auth:** `emailctx auth` runs the installed-app OAuth flow with an OAuth client of type "Desktop app" (`google.client_secrets`, gitignored). Scopes come from config and only `gmail.readonly`, `drive.readonly` and `drive.file` are accepted; the app requests `gmail.readonly` and `drive.file`. The token (with refresh token) is stored in the OS keyring (Windows Credential Manager, macOS Keychain, Secret Service), refreshed automatically, and never written to a project file or printed. `emailctx auth --logout` removes it.
+- **Scope of mail:** `gmail.query` (a Gmail search) selects tracked mail. Backfill takes at most `gmail.backfill_max` of the most recent matches (default 200) so a first sync can't send a whole mailbox through the LLM; they are processed oldest first.
+- **Incremental:** `history.list` (messageAdded) from the stored historyId. History can't filter by query, so each new message is checked with one `messages.list` narrowed to its timestamp. Drafts, spam and trash are skipped. A 404 (expired historyId) falls back to a backfill.
+- **Never miss, never repeat:** the cursor is taken from `getProfile` before a backfill and saved only after every message in the batch went through; on failure the next run resumes from the old cursor. Messages already processed (by Gmail ID) are skipped without being downloaded, and the RFC Message-ID dedupes mail seen both as a file and through Gmail.
+- Gmail label IDs are mapped to label names, so a project's `label` is an explicit routing signal. Review items from Gmail keep `gmail:<id>` and are fetched again on assign.
+
+### Drive folders and the first build
+
+- **Layout:** `<root>/<Company>/` (root defaults to "Client Context", created by the app in My Drive) holds `<Company>.md`, `Emails/` (`<date> <subject>.txt`) and `Documents/` (`<date> <attachment name>`). Every file and folder carries private appProperties (kind + key: company id, or a hash of the Message-ID); that is how the app finds them again, so no Drive IDs are stored locally and people may move or rename things. A company renamed in the registry has its folder and file renamed.
+- **Writes:** email copies and attachments are written once (keyed by Message-ID, so retries never duplicate). The `.md` is updated in place when its SHA-256 changes; Drive keeps its revision history. The email copy is written before the pipeline commits, so a failure leaves nothing half-done and the next run retries.
+- **First build:** at the start of every `emailctx sync` (or `emailctx bootstrap`), each company whose `.md` is missing from Drive (never built, or deleted/trashed) is built from the last `bootstrap.days` (100) days of Gmail: mail from/to/cc its domains and contacts, subject keywords, and meeting-bot emails naming it, at most `bootstrap.max_per_company`, oldest first, through the normal pipeline. Emails that route to another company are left for that company's build. The `.md` is created even if nothing was found. A rebuild after deletion re-renders from the database without re-reading already-processed mail. On the very first sync the per-company builds replace the plain backfill; the Gmail cursor is taken before they run.
+- **Incremental query:** with `gmail.query: null` (default) the sync query is built from the registry (all companies' domains, contacts, keywords and meeting bots). Set a query such as `label:clients` to also catch mail from unknown domains (which then go to review as new companies).
+- **Meeting bots** (`routing.meeting_bot_domains`: fireflies.ai, otter.ai, …): the sender's domain carries no company signal and never becomes a pending company. The subject, body, attachment names and attachment text are searched (word boundaries, terms of 3+ characters) for each company's name and id, its project's name, id and keywords, and its domains. One company named → assigned (step `meeting_bot`); several → review; none → the usual rules (usually review).
+
+### Loading a company's file into a Claude session
+
+- `emailctx mcp` is a read-only MCP server (stdio) registered once at user scope (`claude mcp add emailctx --scope user -e EMAILCTX_CONFIG=<config.yaml> -- <venv>/emailctx.exe mcp`), so every new Claude Code session has it. Tools: `get_company_context(company)` returns `<Company>.md` from Drive; `list_companies()`. Prompt: `/mcp__emailctx__company <name>` loads the file and summarizes it.
+- Lookup lists the app's `.md` files straight from Drive (no local database needed): case-insensitive, `.md` optional, a unique part of the name is enough; ambiguous or unknown names return the list of companies that do have a file.
+- `emailctx context <name>` prints the same file in a terminal; `emailctx context` lists companies.
+
+### Routing (Phase 3)
+
+- **Registry** comes from a YAML file (`emailctx registry load registry.yaml`): own domains, companies with domains and personal-provider contacts, projects with Gmail label, subject keywords, participants (address or domain) and Drive folder. Loading is an idempotent upsert and never deletes rules learned from review.
+- **Pending companies** are created with `company_id` = the unknown registrable domain. A later registry entry listing that domain adopts it; a review assignment approves it (activated if it is the project's company, otherwise folded into the project's company as an alias domain).
+- **Ignored companies:** dismissing a review item with `--ignore-domains` marks its pending companies `ignored`; their addresses then carry no company signal, like personal providers.
+- **Explicit signals:** keywords match the subject only, case-insensitive, on word boundaries (`PO-4471` does not match `PO-44712`). A Drive-folder ID anywhere in the body counts. Several projects hit at the same step go to review; nothing is assigned on a tie.
+- **Review without storing email:** a review item keeps a source reference (`eml:<path>`, later `gmail:<id>`). Assigning re-reads the email from there, pins its thread, records the external sender as a participant (and as a company contact if on a personal provider), then runs the pipeline.
+- **No classifier.** Cascade steps 5–6 (embeddings, LLM classifier) and multi-project segmentation are not built: the email's domain names the company, and the company has one project. Participant rules still place mail with no company domain (e.g. a contractor on gmail.com). Emails no rule can place go to review; none are auto-marked unassigned.
+
+### Conflicts (Phase 5)
+
+- **Latest wins by email date, not processing order.** A modify or remove from an email dated before the requirement's last change is not applied; it is recorded as a `stale` conflict.
+- **Contradictions:** the judge also returns `contradicts`. A modify that reverses the current text (not one that extends it) is applied and recorded as a `contradiction` conflict.
+- Open conflicts render under "Needs confirmation", citing both emails. `emailctx conflicts confirm C<n>` accepts the current text; `--use-other` switches to the other email's version, cited to that email.
 - **Models and thresholds** live in `config.yaml`. Extraction defaults to `claude-opus-5-5`; the gate and the judge default to `claude-haiku-5-5`.

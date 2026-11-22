@@ -1,5 +1,9 @@
 """Apply validated ops to the requirements store. One change_log row per change.
 
+Also records conflicts for "Needs confirmation":
+- an applied modify the judge flagged as contradicting the old text (latest wins),
+- a stale op from an email older than the requirement's last change (not applied).
+
 The evidence quote was checked against the email during validation and is not stored.
 """
 
@@ -13,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from emailctx.pipeline.types import AcceptedOp, AppliedChange, ReqView
 from emailctx.store.db import utcnow
-from emailctx.store.models import ChangeLog, Requirement
+from emailctx.store.models import ChangeLog, Conflict, Requirement
 from emailctx.textnorm import normalize_requirement
 
 
@@ -23,7 +27,13 @@ def load_active(session: Session, project_id: str) -> list[ReqView]:
         .where(Requirement.project_id == project_id, Requirement.status == "active")
         .order_by(Requirement.seq)
     )
-    return [ReqView(r.req_id, r.text, r.normalized_text, r.category) for r in rows]
+    return [
+        ReqView(
+            r.req_id, r.text, r.normalized_text, r.category, r.updated_at,
+            r.source_ids[-1] if r.source_ids else None,
+        )
+        for r in rows
+    ]
 
 
 def format_req_id(seq: int) -> str:
@@ -74,6 +84,7 @@ def apply_ops(
                 raise ValueError(f"{op.req_id} is not an active requirement of {project_id}")
             req_id = req.req_id
             old_text = req.text
+            previous_source = req.source_ids[-1] if req.source_ids else None
             if op.kind == "modify":
                 assert op.text is not None
                 req.text = op.text
@@ -88,6 +99,20 @@ def apply_ops(
             if op.msg_id not in req.source_ids:
                 req.source_ids = [*req.source_ids, op.msg_id]
             req.updated_at = source_date
+            if op.contradicts and previous_source is not None:
+                session.add(
+                    Conflict(
+                        project_id=project_id,
+                        req_id=req_id,
+                        kind="contradiction",
+                        kept_text=new_text,
+                        kept_source_id=op.msg_id,
+                        other_text=old_text,
+                        other_source_id=previous_source,
+                        status="open",
+                        created_at=now,
+                    )
+                )
 
         session.add(
             ChangeLog(
@@ -105,3 +130,26 @@ def apply_ops(
 
     session.flush()
     return applied
+
+
+def record_stale(session: Session, project_id: str, stale: Sequence[AcceptedOp]) -> int:
+    """Record ops from emails older than the requirement's last change. Nothing changes."""
+    now = utcnow()
+    for op in stale:
+        req = session.get(Requirement, (project_id, op.req_id))
+        assert req is not None
+        session.add(
+            Conflict(
+                project_id=project_id,
+                req_id=req.req_id,
+                kind="stale",
+                kept_text=req.text,
+                kept_source_id=req.source_ids[-1] if req.source_ids else None,
+                other_text=op.text if op.kind == "modify" else None,
+                other_source_id=op.msg_id,
+                status="open",
+                created_at=now,
+            )
+        )
+    session.flush()
+    return len(stale)

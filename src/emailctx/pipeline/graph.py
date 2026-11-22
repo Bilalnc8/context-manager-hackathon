@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from emailctx.config import Settings
 from emailctx.llm import LLMClient
-from emailctx.pipeline.apply import apply_ops, load_active
+from emailctx.pipeline.apply import apply_ops, load_active, record_stale
 from emailctx.pipeline.extract import run_extract
 from emailctx.pipeline.gate import run_gate
 from emailctx.pipeline.types import AnyOp, AppliedChange, ValidationResult
@@ -36,7 +36,8 @@ class SegmentState(TypedDict, total=False):
     validation: ValidationResult
     # outputs
     applied: list[AppliedChange]
-    outcome: str  # empty | gated_out | no_change | applied
+    conflicts: int  # conflicts recorded for "Needs confirmation"
+    outcome: str  # empty | gated_out | no_change | applied | flagged
 
 
 @dataclass
@@ -77,17 +78,22 @@ def build_graph(deps: PipelineDeps) -> Any:
             llm=deps.llm,
             embedder=deps.embedder,
             settings=deps.settings,
+            source_date=state.get("source_date"),
         )
         return {"validation": result}
 
     def apply(state: SegmentState) -> SegmentState:
+        v = state["validation"]
         applied = apply_ops(
-            deps.session,
-            state["project_id"],
-            state["validation"].accepted,
-            source_date=state.get("source_date"),
+            deps.session, state["project_id"], v.accepted, source_date=state.get("source_date")
         )
-        return {"applied": applied, "outcome": "applied"}
+        conflicts = record_stale(deps.session, state["project_id"], v.stale)
+        conflicts += sum(1 for op in v.accepted if op.contradicts)
+        return {
+            "applied": applied,
+            "conflicts": conflicts,
+            "outcome": "applied" if applied else "flagged",
+        }
 
     def no_change(state: SegmentState) -> SegmentState:
         return {"outcome": "no_change"}
@@ -99,7 +105,7 @@ def build_graph(deps: PipelineDeps) -> Any:
         v = state["validation"]
         if v.rejected and state["attempt"] <= max_retries:
             return "extract"
-        return "apply" if v.accepted else "no_change"
+        return "apply" if (v.accepted or v.stale) else "no_change"
 
     g = StateGraph(SegmentState)
     g.add_node("gate", gate)

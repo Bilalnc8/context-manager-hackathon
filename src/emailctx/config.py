@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Generic, Literal, TypeVar
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Task = Literal["gate", "extract", "judge"]
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
@@ -23,10 +23,33 @@ class PerTask(BaseModel, Generic[T]):
         return getattr(self, task)
 
 
+DEFAULT_PERSONAL_PROVIDERS = [
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+    "yahoo.com", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com",
+]
+
+
+DEFAULT_MEETING_BOTS = [
+    "fireflies.ai", "otter.ai", "fathom.video", "read.ai", "tldv.io", "meetgeek.ai",
+    "avoma.com", "gong.io", "grain.com", "krisp.ai", "tactiq.io",
+]
+
+
+class RoutingSettings(BaseModel):
+    personal_providers: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_PERSONAL_PROVIDERS)
+    )
+    # Meeting-summary bots: their domain says nothing about the client, so their emails
+    # are matched on company/project names instead.
+    meeting_bot_domains: list[str] = Field(default_factory=lambda: list(DEFAULT_MEETING_BOTS))
+    require_dmarc_pass: bool = False
+
+
 class PipelineSettings(BaseModel):
     max_extract_retries: int = 1
     min_evidence_chars: int = 5
     judge_top_k: int = 20
+    max_attachment_chars: int = 100_000  # per email, across readable attachments
 
 
 DEFAULT_CATEGORIES = [
@@ -47,13 +70,63 @@ class S3Settings(BaseModel):
     profile: str | None = None
 
 
+class DriveSettings(BaseModel):
+    enabled: bool = False
+    root_folder: str = "Client Context"  # created by the app in My Drive
+
+
 class OutputSettings(BaseModel):
     local_dir: Path | None = Path("companies")
+    git_commit: bool = False  # make local_dir a git repo and commit each changed file
     s3: S3Settings = Field(default_factory=S3Settings)
+    drive: DriveSettings = Field(default_factory=DriveSettings)
+
+
+GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
+DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
+# The one write scope allowed: access only to files and folders this app created.
+DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
+ALLOWED_SCOPES = frozenset({GMAIL_READONLY, DRIVE_READONLY, DRIVE_FILE})
+READONLY_SCOPES = ALLOWED_SCOPES  # kept for callers; Gmail is always read-only
+
+
+class GoogleSettings(BaseModel):
+    client_secrets: Path = Path("client_secret.json")
+    scopes: list[str] = Field(default_factory=lambda: [GMAIL_READONLY])
+
+    @field_validator("scopes")
+    @classmethod
+    def _read_only(cls, scopes: list[str]) -> list[str]:
+        extra = set(scopes) - ALLOWED_SCOPES
+        if extra:
+            raise ValueError(
+                "only read-only Google scopes (plus drive.file for the app's own Drive "
+                f"folders) are allowed, not: {sorted(extra)}"
+            )
+        if not scopes:
+            raise ValueError("at least one Google scope is required")
+        return scopes
+
+
+class GmailSettings(BaseModel):
+    # Gmail search for tracked mail. None = built from the registry (company domains,
+    # contacts, keywords, meeting bots). "" = all mail.
+    query: str | None = None
+    backfill_max: int | None = 200
+
+
+class BootstrapSettings(BaseModel):
+    """Building a company's first context.md from recent mail."""
+
+    days: int = 100
+    max_per_company: int | None = 500
 
 
 class Settings(BaseModel):
     db_path: Path = Path("emailctx.db")
+    google: GoogleSettings = Field(default_factory=GoogleSettings)
+    gmail: GmailSettings = Field(default_factory=GmailSettings)
+    bootstrap: BootstrapSettings = Field(default_factory=BootstrapSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
     models: PerTask[str] = PerTask[str](
         gate="claude-haiku-5-5", extract="claude-opus-5-5", judge="claude-haiku-5-5"
@@ -63,6 +136,7 @@ class Settings(BaseModel):
     fallbacks: PerTask[str | None] = PerTask[str | None](
         gate=None, extract="default", judge=None
     )
+    routing: RoutingSettings = Field(default_factory=RoutingSettings)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
     categories: list[str] = Field(default_factory=lambda: list(DEFAULT_CATEGORIES))
 
@@ -75,10 +149,14 @@ class Settings(BaseModel):
         local = self.output.local_dir
         if local is not None and not local.is_absolute():
             local = base / local
+        secrets = self.google.client_secrets
+        if not secrets.is_absolute():
+            secrets = base / secrets
         return self.model_copy(
             update={
                 "db_path": self.db_path if self.db_path.is_absolute() else base / self.db_path,
                 "output": self.output.model_copy(update={"local_dir": local}),
+                "google": self.google.model_copy(update={"client_secrets": secrets}),
             }
         )
 

@@ -1,8 +1,11 @@
 """SQLite schema. Mirrors the Data model section of docs/DESIGN.md.
 
-Email content is never stored. Emails are cleaned, gated, extracted and validated in
-memory; the DB keeps only what idempotency, threading and citations need:
-- `messages`: msg_id, gmail_id, thread_id, subject, date. No body, no addresses.
+Email content is never stored in this database. Emails are cleaned, gated, extracted
+and validated in memory; copies of company emails and their attachments live only in
+the company's Drive folder. The DB keeps only what idempotency, threading and
+citations need:
+- `messages`: msg_id, gmail_id, thread_id, subject, date, attachment file names.
+  No body, no addresses.
 - `thread_paragraphs`: SHA-256 of each cleaned paragraph, so later replies in the
   thread can drop repeated (quoted) paragraphs without the text being kept.
 - `change_log`: what changed in the requirement and which email caused it. The verbatim
@@ -39,7 +42,8 @@ class Company(Base):
     __tablename__ = "companies"
     company_id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String, default="active")  # active | pending
+    # active | pending (unknown domain awaiting approval) | ignored (dismissed: no signal)
+    status: Mapped[str] = mapped_column(String, default="active")
 
 
 class CompanyDomain(Base):
@@ -66,6 +70,7 @@ class Project(Base):
         ForeignKey("companies.company_id"), nullable=True
     )
     name: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")  # active | archived
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     label: Mapped[str | None] = mapped_column(String, nullable=True)
     drive_folder_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -101,13 +106,24 @@ class RoutingLog(Base):
 
 
 class ReviewQueue(Base):
+    """An email waiting for a person to pick its project.
+
+    The email itself is not stored: `source_ref` says where to read it again on assign
+    ("eml:<absolute path>" now, "gmail:<id>" once Gmail sync exists).
+    """
+
     __tablename__ = "review_queue"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     msg_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     kind: Mapped[str] = mapped_column(String)  # project | new_company
+    # {"projects": [project_id, ...], "pending_companies": [company_id, ...]}
     candidates: Mapped[list | dict | None] = mapped_column(JSON, nullable=True)
-    status: Mapped[str] = mapped_column(String, default="open")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    source_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="open")  # open | assigned | dismissed
+    resolved_project_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 # --- Messages and segments ------------------------------------------------------
@@ -123,6 +139,7 @@ class Message(Base):
     thread_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     subject: Mapped[str | None] = mapped_column(Text, nullable=True)  # for citations
     date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    attachments: Mapped[list | None] = mapped_column(JSON, nullable=True)  # file names only
     source: Mapped[str] = mapped_column(String)  # eml | gmail
     ingested_at: Mapped[datetime] = mapped_column(DateTime)
 
@@ -177,6 +194,29 @@ class ChangeLog(Base):
     source_id: Mapped[str] = mapped_column(String)  # msg_id
     timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # source date
     applied_at: Mapped[datetime] = mapped_column(DateTime)  # wall clock, never rendered
+
+
+class Conflict(Base):
+    """A requirement change a person should confirm. Rendered under "Needs confirmation".
+
+    kind:
+    - contradiction: a newer email contradicted the requirement. Latest wins, so
+      kept_text is the new text and other_text the one it replaced.
+    - stale: an email older than the requirement's last change tried to change it.
+      Latest wins, so nothing was applied; other_text is what the older email said.
+    """
+
+    __tablename__ = "conflicts"
+    conflict_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.project_id"), index=True)
+    req_id: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)  # contradiction | stale
+    kept_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    other_text: Mapped[str | None] = mapped_column(Text, nullable=True)  # None: a removal
+    kept_source_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    other_source_id: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="open")  # open | confirmed
+    created_at: Mapped[datetime] = mapped_column(DateTime)  # wall clock, never rendered
 
 
 # --- Idempotency and sync state -------------------------------------------------
