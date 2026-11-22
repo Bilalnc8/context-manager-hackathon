@@ -283,7 +283,7 @@ A message with no requirements in it (e.g. "this is a test") is logged as `1 new
 
 ## What's in the repo, and what isn't live data
 
-- `dummy_data/` and `expected_context/` are the challenge's **sample project**, used by `emailctx load-sample` and `emailctx eval run` (scored against `eval/facts/`). They are **not** the live client state. Live state is only in `emailctx.db`, served through the MCP tools.
+- The challenge's **sample project** (`dummy_data/`, `expected_context/`, `eval/facts/`) is not on `main`. It lives on the `sample-data` branch, for `emailctx load-sample` and `emailctx eval run`. It's never the live client state: live state is only in `emailctx.db`, served through the MCP tools.
 - `companies/<id>/context.md` is a rendered copy of each client's state (gitignored).
 - Secrets and local state are gitignored: `.env`, `client_secret*.json`, `*.db`, `companies/`.
 - Design and internals: [DESIGN.md](DESIGN.md). Challenge brief: [challenge-8.md](challenge-8.md).

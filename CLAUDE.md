@@ -5,7 +5,7 @@ Client emails go through an LLM pipeline that extracts cited requirements per cl
 ## Answering questions about clients
 
 - Questions about a client (Acme, Nova, Orion, or any company) are answered from the **emailctx MCP tools**: `list_companies`, then `get_company_context`, citing the footnotes. Use them without being asked.
-- Do **not** answer client questions from files in this repo. `dummy_data/` and `expected_context/` are the challenge's sample project for `emailctx eval`, not live client state. Live state is only in `emailctx.db`, served by the MCP server.
+- Do **not** answer client questions from files in this repo. Live state is only in `emailctx.db`, served by the MCP server. The challenge's sample project (`dummy_data/`, `expected_context/`) lives on the `sample-data` branch, for `emailctx eval` only, and is never live client state.
 - If the emailctx tools aren't available, say so, and point the user to `/mcp` (connect and sign in) and [docs/SETUP.md](docs/SETUP.md) step 9. Don't fall back to the sample files.
 
 ## Setting it up

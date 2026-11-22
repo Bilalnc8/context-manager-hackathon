@@ -16,6 +16,12 @@ from emailctx.store.db import make_engine, make_sessionmaker
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "dummy_data"
 FACTS = ROOT / "eval" / "facts"
+# The sample project (dummy_data/, expected_context/, eval/facts/) lives on the
+# sample-data branch, not main; these tests run only where it is checked out.
+needs_sample = pytest.mark.skipif(
+    not (SAMPLE.exists() and FACTS.exists()),
+    reason="sample data lives on the sample-data branch",
+)
 
 
 class ScriptedLLM:
@@ -50,6 +56,7 @@ class ScriptedLLM:
         raise AssertionError(f"unexpected {task} call")
 
 
+@needs_sample
 def test_sample_reads_as_real_email():
     sample = read_sample(SAMPLE)
     assert len(sample.inputs) == 42
@@ -74,6 +81,7 @@ def test_sample_reads_as_real_email():
     assert sample.registry.own_domains == ["contextlab.example"]
 
 
+@needs_sample
 def test_every_sample_input_reaches_its_project_once(tmp_path):
     settings = Settings(db_path=tmp_path / "s.db", output=OutputSettings(local_dir=tmp_path / "out"))
     llm = ScriptedLLM()
@@ -90,6 +98,7 @@ def test_every_sample_input_reaches_its_project_once(tmp_path):
     assert len(llm.calls) == calls  # nothing processed twice
 
 
+@needs_sample
 def test_eval_scores_the_generated_files(tmp_path):
     workdir = tmp_path / "run"
     report = run_eval(SAMPLE, FACTS, workdir, Settings(), ScriptedLLM())
@@ -117,6 +126,7 @@ def test_eval_scores_the_generated_files(tmp_path):
     assert "eval.db" in {p.name for p in workdir.iterdir()}  # the real store is never touched
 
 
+@needs_sample
 def test_eval_reports_a_rerun_that_changes_files(tmp_path, monkeypatch):
     import emailctx.evaluate as ev
 
@@ -142,6 +152,7 @@ def test_eval_only_clears_its_own_folder(tmp_path):
     assert [p.name for p in ours.iterdir()] == [".emailctx-eval"]
 
 
+@needs_sample
 def test_facts_cover_every_expected_file():
     facts = read_facts(FACTS)
     _, expected = read_sample(SAMPLE).registry, read_sample(SAMPLE).expected_files
