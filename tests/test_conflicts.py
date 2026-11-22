@@ -122,7 +122,7 @@ def test_confirm_use_other_switches_to_the_other_email(seeded, tmp_path):
     assert (last.op, last.source_id, last.old_text) == ("modify", "json@acme.com", "The export must support CSV and XLSX.")
     md = seeded.md_bytes().decode()
     assert "Needs confirmation" not in md
-    assert "- **REQ-001** The export must support CSV and JSON.[^1][^2][^3]" in md
+    assert "- **REQ-001** [open] The export must support CSV and JSON.[^1][^2][^3]" in md
 
 
 def test_stale_removal_is_flagged(seeded, tmp_path):

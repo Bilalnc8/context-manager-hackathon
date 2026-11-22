@@ -7,8 +7,10 @@ db_path: emailctx.db
 output:
   # Google Drive: "<root_folder>/<Company>/" holds <Company>.md, Emails/ (a .txt copy
   # of every email routed to the company) and Documents/ (their attachments).
+  # Off: the database is the source of truth and the MCP server reads it directly.
+  # Turn on to also publish each file, email copies and attachments to Google Drive.
   drive:
-    enabled: true
+    enabled: false
     root_folder: Client Context
   local_dir: companies          # local copy of the .md files; null to disable
   git_commit: false             # commit each change in local_dir (its own git repo)
@@ -35,6 +37,7 @@ gmail:
   # "label:clients" to also discover new clients (unknown domains go to review).
   query: null
   backfill_max: 200             # cap for a plain backfill (used when Drive is off)
+  poll_minutes: 0               # `emailctx serve` checks Gmail every N minutes; 0 = off
 
 # A company with no .md in its Drive folder gets one built from this much past mail.
 bootstrap:

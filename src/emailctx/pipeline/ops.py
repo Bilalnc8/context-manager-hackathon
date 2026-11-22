@@ -33,12 +33,19 @@ class RemoveOp(BaseModel):
     evidence: str
 
 
+class AnswerOp(BaseModel):
+    op: Literal["answer"]
+    question_id: str = Field(description="ID of the open question the email answers, e.g. Q-001.")
+    answer: str = Field(description="The client's answer, one self-contained sentence.")
+    evidence: str = Field(description="Exact quote from the email giving the answer.")
+
+
 class NoneOp(BaseModel):
     op: Literal["none"]
     reason: str = ""
 
 
-Op = Annotated[AddOp | ModifyOp | RemoveOp | NoneOp, Field(discriminator="op")]
+Op = Annotated[AddOp | ModifyOp | RemoveOp | AnswerOp | NoneOp, Field(discriminator="op")]
 
 
 class ExtractResult(BaseModel):

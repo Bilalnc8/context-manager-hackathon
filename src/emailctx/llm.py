@@ -37,6 +37,8 @@ class AnthropicLLM:
     def structured(self, task: Task, system: str, prompt: str, schema: type[M]) -> M:
         import anthropic
 
+        if not (getattr(self._client, "api_key", None) or getattr(self._client, "auth_token", None)):
+            raise LLMError(f"{task}: no Anthropic API key: set ANTHROPIC_API_KEY")
         s = self._settings
         kwargs: dict[str, Any] = dict(
             model=s.models.for_task(task),

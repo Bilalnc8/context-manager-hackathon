@@ -1,19 +1,22 @@
 """Ingest one email: parse, clean, route to a project, run the segment pipeline, publish.
 
-The email is processed in memory and never stored: the DB gets its metadata (ID,
-thread, subject, date), paragraph hashes for the thread backstop, routing decisions,
-and whatever requirement changes passed validation. An email routed to review is kept
-only as a reference to its source (file path or Gmail ID) so it can be read again.
+The DB gets the email's metadata (ID, thread, subject, date, sender), the cleaned text
+the pipeline read (so every citation can be opened later), paragraph hashes for the
+thread backstop, routing decisions, and whatever requirement changes passed validation.
 
 Idempotent: a msg_id already in processed_messages is skipped before any LLM call.
 Everything for one message is one transaction; the company's context.md is rendered
-after commit and published only where its hash changed.
+after commit and published only where its hash changed. With a write_lock (the MCP
+server's), the whole ingest, render included, holds it, so writers take turns and the
+published file always reflects the latest commit.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import threading
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -71,6 +74,7 @@ class IngestResult:
     dropped: list[OpOutcome] = field(default_factory=list)
     rejected: list[OpOutcome] = field(default_factory=list)
     applied: list[AppliedChange] = field(default_factory=list)
+    answered: list[str] = field(default_factory=list)  # question ids the email answered
     published: list[PublishResult] = field(default_factory=list)
 
 
@@ -84,6 +88,10 @@ class Runtime:
     embedder: Embedder = field(default_factory=NoOpEmbedder)
     publishers: Sequence[Publisher] | None = None  # None: from settings
     drive: DriveStore | None = None  # set when Drive output is on: copies + .md go there
+    # Every write in one process (email sync, pasted input, a teammate's status change)
+    # takes this lock, rendering and publishing included: writers queue instead of
+    # failing on SQLite's lock, and an older render can't overwrite a newer one.
+    write_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def company_name(self, company_id: str) -> str:
         with self.sessions() as s:
@@ -195,10 +203,18 @@ def _seen_in_thread(session: Session, thread_id: str, parsed: ParsedEmail) -> se
 
 
 def _record_message(
-    session: Session, parsed: ParsedEmail, thread_id: str, source: str, gmail_id: str | None
+    session: Session,
+    parsed: ParsedEmail,
+    thread_id: str,
+    source: str,
+    gmail_id: str | None,
+    max_attachment_chars: int,
 ) -> None:
     row = session.get(Message, parsed.msg_id)
     if row is None:
+        body, _read = with_attachment_text(
+            parsed.cleaned_text, parsed.attachments, max_attachment_chars
+        )
         session.add(
             Message(
                 msg_id=parsed.msg_id,
@@ -207,6 +223,8 @@ def _record_message(
                 subject=parsed.subject,
                 date=parsed.date,
                 attachments=[a.filename for a in parsed.attachments] or None,
+                sender=parsed.sender,
+                body=body,
                 source=source,
                 ingested_at=utcnow(),
             )
@@ -293,8 +311,9 @@ def process_for_project(
         dropped=validation.dropped if validation else [],
         rejected=validation.rejected if validation else [],
         applied=state.get("applied", []),
+        answered=state.get("answered", []),
     )
-    if result.applied or state.get("conflicts"):
+    if result.applied or result.answered or state.get("conflicts"):
         result.published = render_and_publish(
             session, project.company_id, rt.settings, rt.targets(), message=commit_message(result, parsed)
         )
@@ -303,7 +322,9 @@ def process_for_project(
 
 def commit_message(result: IngestResult, parsed: ParsedEmail) -> str:
     """One line describing the change and citing its source email."""
-    changes = ", ".join(f"{c.req_id} {c.op}" for c in result.applied) or "needs confirmation"
+    changes = ", ".join(
+        [f"{c.req_id} {c.op}" for c in result.applied] + [f"{q} answered" for q in result.answered]
+    ) or "needs confirmation"
     date = parsed.date.strftime("%Y-%m-%d") if parsed.date else "undated"
     source = parsed.msg_id if not parsed.msg_id.startswith("sha256:") else "no Message-ID"
     return f"{result.project_id}: {changes} (email {source}, {date})"
@@ -325,6 +346,7 @@ def ingest_eml(
     publishers: Sequence[Publisher] | None = None,
     drive: DriveStore | None = None,
     only_companies: set[str] | None = None,
+    write_lock: threading.RLock | None = None,
 ) -> IngestResult:
     """Ingest one raw email. With project_id and/or company_id it skips routing (a manual
     assignment; a company alone means its one project).
@@ -335,6 +357,31 @@ def ingest_eml(
     only_companies (used when building a company's first file): an email that routes to
     any other company is left untouched, unprocessed, for that company's own run.
     """
+    with write_lock or nullcontext():
+        return _ingest_eml(
+            raw, project_id, company_id=company_id, source_ref=source_ref, source=source,
+            gmail_id=gmail_id, labels=labels, settings=settings, sessions=sessions, llm=llm,
+            embedder=embedder, publishers=publishers, drive=drive, only_companies=only_companies,
+        )
+
+
+def _ingest_eml(
+    raw: bytes,
+    project_id: str | None,
+    *,
+    company_id: str | None,
+    source_ref: str | None,
+    source: str,
+    gmail_id: str | None,
+    labels: Sequence[str],
+    settings: Settings,
+    sessions: sessionmaker[Session],
+    llm: LLMClient,
+    embedder: Embedder | None,
+    publishers: Sequence[Publisher] | None,
+    drive: DriveStore | None,
+    only_companies: set[str] | None,
+) -> IngestResult:
     rt = Runtime(settings, sessions, llm, embedder or NoOpEmbedder(), publishers, drive)
     parsed = dataclasses.replace(parse_eml(raw), labels=tuple(labels))
 
@@ -355,7 +402,9 @@ def ingest_eml(
             decision = None
 
         thread_id = resolve_thread(session, parsed)
-        _record_message(session, parsed, thread_id, source, gmail_id)
+        _record_message(
+            session, parsed, thread_id, source, gmail_id, settings.pipeline.max_attachment_chars
+        )
         if decision is None:
             decision = route(session, parsed, thread_id, settings)
         if (

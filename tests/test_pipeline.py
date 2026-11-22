@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from sqlalchemy import select
+
 from emailctx.llm import RecordedLLM
+from emailctx.store.models import Message
 
 
 def test_initial_email_creates_requirements(seeded):
@@ -17,7 +20,7 @@ def test_initial_email_creates_requirements(seeded):
     assert [c.op for c in seeded.change_log()] == ["add", "add"]
     md = seeded.md_bytes().decode()
     assert "## atlas" not in md  # one project per company: no project heading
-    assert "- **REQ-001** The export must support CSV.[^1]" in md
+    assert "- **REQ-001** [open] The export must support CSV.[^1]" in md
     assert "\n## Non-functional\n" in md
     assert "- 2026-11-16 · **REQ-001** added: The export must support CSV.[^1]" in md
     assert '[^1]: Email "Atlas export requirements", 2026-11-16, ID `atlas-001@acme.com`' in md
@@ -159,7 +162,7 @@ def test_real_change_modifies_exactly_one_requirement(seeded):
 
     md = seeded.md_bytes().decode()
     assert seeded.md_bytes() != before_md
-    assert "- **REQ-001** The export must support CSV and XLSX.[^1][^2]" in md
+    assert "- **REQ-001** [open] The export must support CSV and XLSX.[^1][^2]" in md
     assert '[^2]: Email "Re: Atlas export requirements", 2026-11-19, ID `atlas-004@acme.com`' in md
     assert "we also need XLSX export alongside CSV" not in md  # quote checked, not kept
 
@@ -210,35 +213,27 @@ def test_thread_backstop_drops_unmarked_quotes(seeded):
     assert "must support CSV" not in gate_prompt
 
 
-# No email content is stored ----------------------------------------------------------
+# Source text is kept, cleaned ------------------------------------------------------------
 
 
-def test_no_email_content_is_stored(seeded, tmp_path):
+def test_source_text_is_kept_cleaned(seeded):
+    """Every input's cleaned text is stored with its message, so any citation can be
+    opened later. Quoted replies and signatures are not: they were removed before the
+    pipeline read the email."""
     seeded.ingest("atlas_02_reply_quote", "atlas_02_reply_quote")
-    seeded.ingest("atlas_03_reworded", "atlas_03_reworded_modify")
-    seeded.ingest("atlas_04_real_change", "atlas_04_real_change")
     seeded.ingest("atlas_05_meeting", RecordedLLM({"gate": [{"has_change": False}]}))
 
-    db = seeded.settings.db_path.read_bytes()
+    with seeded.sessions() as s:
+        msgs = {m.msg_id: m for m in s.scalars(select(Message))}
+    first, reply = msgs["atlas-001@acme.com"], msgs["atlas-002@ourstudio.io"]
+    assert first.body == "Hi team,\n\nFor Atlas, the export must support CSV. Reports should load in under 2 seconds."
+    assert (first.sender, reply.sender) == ("jane@acme.com", "sam@ourstudio.io")
+    assert reply.body == "Sounds good, we'll plan around that."  # the quoted original is gone
+    assert all("Product Lead, Acme" not in (m.body or "") for m in msgs.values())  # signature
+    assert any("Can we meet Thursday" in (m.body or "") for m in msgs.values())  # gated out, still kept
+    # The rendered file holds requirement text and citations, never email bodies.
     md = seeded.md_bytes()
-    never_kept = [
-        "Hi team",  # greeting
-        "Product Lead, Acme",  # signature
-        "Sounds good, we'll plan around that",  # body of a no-change email
-        "Just confirming",  # body of a reworded email
-        "after talking to finance",  # body of an applied email
-        "we also need XLSX export alongside CSV",  # evidence quote
-        "Reports should load in under 2 seconds",  # evidence quote
-        "Can we meet Thursday",  # gated-out email
-        "jane@acme.com",  # addresses
-        "sam@ourstudio.io",
-    ]
-    for phrase in never_kept:
-        assert phrase.encode() not in db, f"DB contains {phrase!r}"
-        assert phrase.encode() not in md, f"context.md contains {phrase!r}"
-    # What is kept: requirement text and citation metadata.
-    assert b"The export must support CSV and XLSX." in db
-    assert b"Atlas export requirements" in db  # subject, for footnotes
+    assert b"Hi team" not in md and b"jane@acme.com" not in md
 
 
 # Companies -------------------------------------------------------------------------------

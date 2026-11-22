@@ -4,6 +4,9 @@ Also records conflicts for "Needs confirmation":
 - an applied modify the judge flagged as contradicting the old text (latest wins),
 - a stale op from an email older than the requirement's last change (not applied).
 
+A modify of finished work (done or verified) reopens it: what was delivered no longer
+matches what the client asks for. Client answers to open questions close them.
+
 The evidence quote was checked against the email during validation and is not stored.
 """
 
@@ -15,9 +18,22 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from emailctx.pipeline.types import AcceptedOp, AppliedChange, ReqView
+from emailctx.pipeline.types import (
+    AcceptedAnswer,
+    AcceptedOp,
+    AppliedChange,
+    QuestionView,
+    ReqView,
+)
 from emailctx.store.db import utcnow
-from emailctx.store.models import ChangeLog, Conflict, Requirement
+from emailctx.store.models import (
+    FINISHED_STATES,
+    ChangeLog,
+    Conflict,
+    Question,
+    Requirement,
+    StatusChange,
+)
 from emailctx.textnorm import normalize_requirement
 
 
@@ -30,10 +46,39 @@ def load_active(session: Session, project_id: str) -> list[ReqView]:
     return [
         ReqView(
             r.req_id, r.text, r.normalized_text, r.category, r.updated_at,
-            r.source_ids[-1] if r.source_ids else None,
+            r.source_ids[-1] if r.source_ids else None, r.delivery,
         )
         for r in rows
     ]
+
+
+def load_waiting_questions(session: Session, project_id: str) -> list[QuestionView]:
+    """Questions still waiting for the client's answer (open or asked)."""
+    rows = session.scalars(
+        select(Question)
+        .where(Question.project_id == project_id, Question.status.in_(("open", "asked")))
+        .order_by(Question.seq)
+    )
+    return [QuestionView(q.question_id, q.text, q.req_id) for q in rows]
+
+
+def apply_answers(
+    session: Session, project_id: str, answers: Sequence[AcceptedAnswer], *, source_date: datetime | None
+) -> list[str]:
+    """Record client answers from an email. Returns the answered question ids."""
+    done = []
+    for a in answers:
+        q = session.get(Question, (project_id, a.question_id))
+        if q is None or q.status not in ("open", "asked"):
+            raise ValueError(f"{a.question_id} is not waiting for an answer in {project_id}")
+        q.status = "answered"
+        q.answer = a.answer
+        q.answer_source_id = a.msg_id
+        q.answered_by = "client (email)"
+        q.answered_at = source_date or utcnow()
+        done.append(q.question_id)
+    session.flush()
+    return done
 
 
 def format_req_id(seq: int) -> str:
@@ -87,6 +132,20 @@ def apply_ops(
             previous_source = req.source_ids[-1] if req.source_ids else None
             if op.kind == "modify":
                 assert op.text is not None
+                if req.delivery in FINISHED_STATES:
+                    session.add(
+                        StatusChange(
+                            project_id=project_id,
+                            req_id=req.req_id,
+                            old_status=req.delivery,
+                            new_status="open",
+                            note="reopened: the client changed this requirement",
+                            changed_by=f"email {op.msg_id}",
+                            changed_at=now,
+                        )
+                    )
+                    req.delivery = "open"
+                    req.delivery_note = None
                 req.text = op.text
                 req.normalized_text = normalize_requirement(op.text)
                 if op.category:

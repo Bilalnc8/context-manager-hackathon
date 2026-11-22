@@ -11,8 +11,8 @@ messages.list call narrowed to its own timestamp. Drafts and spam are skipped.
 If Google has expired the historyId (HTTP 404), sync falls back to a backfill; IDs
 already processed are skipped without being downloaded.
 
-Each email is fetched as raw RFC 822 bytes, processed in memory by ingest_eml (route,
-gate, extract, validate, apply), and dropped. The stored cursor only advances after
+Each email is fetched as raw RFC 822 bytes and processed by ingest_eml (route, gate,
+extract, validate, apply; the cleaned text is kept with the message for citations). The stored cursor only advances after
 every message in the batch went through, so a failure never skips mail: the next run
 starts from the same cursor and processed messages are skipped.
 """
@@ -189,6 +189,7 @@ class GmailSync:
             embedder=self.rt.embedder,
             publishers=self.rt.publishers,
             drive=self.rt.drive,
+            write_lock=self.rt.write_lock,
         )
         report.results.append((gmail_id, result))
         if self.on_result:

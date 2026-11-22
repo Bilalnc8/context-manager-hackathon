@@ -180,7 +180,7 @@ def test_requirement_from_meeting_summary_pdf(denv):
     assert result.outcome == "applied"
     assert "--- Attachment: Weekly sync.pdf ---" in llm.calls[1][1]  # extraction saw the PDF text
     md = denv.drive.read(f"{ROOT}/Acme/Acme.md").decode()
-    assert "- **REQ-001** The export must support XLSX.[^1]" in md
+    assert "- **REQ-001** [open] The export must support XLSX.[^1]" in md
     assert '[^1]: Email "Notes from today", 2026-11-05, ID `d5@test`, attachments: Weekly sync.pdf' in md
     assert f"{ROOT}/Acme/Documents/2026-11-05 Weekly sync.pdf" in denv.drive.tree()
 

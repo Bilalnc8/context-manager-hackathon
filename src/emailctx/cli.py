@@ -66,6 +66,8 @@ def _print_result(result) -> None:
         typer.secho(f"queued for review as item {result.review_id}", fg="yellow")
     for c in result.applied:
         typer.secho(f"  applied  {c.op:<6} {c.req_id}: {c.new_text or c.old_text}", fg="green")
+    for q in result.answered:
+        typer.secho(f"  answered {q}", fg="green")
     for o in result.dropped:
         typer.echo(f"  dropped  {o.op.op:<6} {o.reason}")
     for o in result.rejected:
@@ -192,16 +194,128 @@ def context_cmd(
     typer.echo(text, nl=False)
 
 
+def _server_runtime(settings: Settings):
+    """Runtime for the MCP server. Built on the first tool call, never exits the process."""
+    from emailctx.auth import AuthError
+    from emailctx.ingest import Runtime
+    from emailctx.llm import AnthropicLLM
+
+    sessions = make_sessionmaker(make_engine(settings.db_path))
+    drive = None
+    if settings.output.drive.enabled:
+        try:
+            drive = _drive_store(settings)
+        except AuthError as e:
+            raise RuntimeError(
+                f"{e}. Drive output is on in the server's config: sign in, or set output.drive.enabled: false"
+            ) from e
+    return Runtime(settings, sessions, AnthropicLLM(settings), drive=drive)
+
+
 @app.command("mcp")
 def mcp_cmd(config: ConfigOpt = None) -> None:
-    """Run the MCP server (stdio) that lets Claude sessions fetch company files.
+    """Run the MCP server over stdio, for one machine.
 
     Register once:  claude mcp add emailctx --scope user -e EMAILCTX_CONFIG=<config.yaml> -- <emailctx> mcp
     """
     from emailctx.mcp_server import run
 
     settings = load_settings(config)
-    run(lambda: _drive_store(settings))
+    run(lambda: _server_runtime(settings))
+
+
+@app.command("serve")
+def serve_cmd(
+    host: Annotated[str, typer.Option(help="Interface to listen on.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port to listen on.")] = 8000,
+    allowed_host: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--allowed-host",
+            help="Extra Host header to accept, e.g. a tunnel's my-team.ngrok.app (repeatable).",
+        ),
+    ] = None,
+    poll_minutes: Annotated[
+        Optional[float],
+        typer.Option(
+            "--poll-minutes",
+            help="Check Gmail for new client mail every N minutes (default: gmail.poll_minutes; 0 = off). "
+            "Needs `emailctx auth` on this machine, signed in as the shared inbox.",
+        ),
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Run the MCP server over HTTP so the whole team's Claude sessions can connect.
+
+    Claude Code:  claude mcp add --transport http emailctx http://localhost:8000/mcp
+
+    One process owns the database: tool calls and the Gmail poller share one runtime and
+    one write lock, so writes take turns and the published files stay current.
+    """
+    import threading
+
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    from emailctx.mcp_server import run
+
+    settings = load_settings(config)
+    made: dict = {}
+    made_lock = threading.Lock()
+
+    def runtime():
+        with made_lock:  # the poller and the first tool call may race to build it
+            if "rt" not in made:
+                made["rt"] = _server_runtime(settings)
+            return made["rt"]
+
+    minutes = settings.gmail.poll_minutes if poll_minutes is None else poll_minutes
+    if minutes and minutes > 0:
+        _start_gmail_poller(settings, runtime, minutes)
+    local = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    extra = list(allowed_host or [])
+    security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=local + extra,
+        allowed_origins=[f"http://{h}" for h in local] + [f"https://{h}" for h in extra],
+    )
+    typer.echo(f"emailctx MCP server on http://{host}:{port}/mcp (database {settings.db_path})", err=True)
+    run(runtime, transport="http", host=host, port=port, transport_security=security)
+
+
+def _start_gmail_poller(settings: Settings, runtime, minutes: float) -> None:
+    """Background thread: run a Gmail sync now, then every `minutes`. Errors are logged
+    and retried next round; the server keeps serving either way."""
+    import threading
+    import time
+
+    from emailctx.auth import AuthError
+    from emailctx.sources.gmail_sync import GmailSync, SyncError
+
+    def log(msg: str) -> None:
+        typer.echo(f"[gmail] {msg}", err=True)
+
+    def loop() -> None:
+        while True:
+            try:
+                report = GmailSync(_gmail_service(settings), runtime()).run()
+                changed = [
+                    f"{r.company_id}: " + ", ".join(
+                        [f"{c.req_id} {c.op}" for c in r.applied] + [f"{q} answered" for q in r.answered]
+                    )
+                    for _, r in report.results if r.applied or r.answered
+                ]
+                log(f"{report.account}: {report.mode}, {len(report.results)} new, "
+                    f"{len(changed)} with changes" + ("".join(f"\n  {c}" for c in changed)))
+            except AuthError as e:
+                log(f"{e} (sign in as the shared inbox); retrying in {minutes:g} min")
+            except SyncError as e:
+                log(f"sync stopped, will resume from the same point: {e}")
+            except Exception as e:  # keep the server up; the next round retries
+                log(f"sync failed: {e!r}")
+            time.sleep(minutes * 60)
+
+    threading.Thread(target=loop, name="gmail-poller", daemon=True).start()
+    typer.echo(f"[gmail] checking for new client mail every {minutes:g} min", err=True)
 
 
 @app.command("bootstrap")
