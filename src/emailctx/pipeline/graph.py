@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 
 from emailctx.config import Settings
 from emailctx.llm import LLMClient
-from emailctx.pipeline.apply import apply_ops, load_active, record_stale
+from emailctx.pipeline.apply import (
+    apply_answers,
+    apply_ops,
+    load_active,
+    load_waiting_questions,
+    record_stale,
+)
 from emailctx.pipeline.extract import run_extract
 from emailctx.pipeline.gate import run_gate
 from emailctx.pipeline.types import AnyOp, AppliedChange, ValidationResult
@@ -36,6 +42,7 @@ class SegmentState(TypedDict, total=False):
     validation: ValidationResult
     # outputs
     applied: list[AppliedChange]
+    answered: list[str]  # question ids the email answered
     conflicts: int  # conflicts recorded for "Needs confirmation"
     outcome: str  # empty | gated_out | no_change | applied | flagged
 
@@ -54,7 +61,8 @@ def build_graph(deps: PipelineDeps) -> Any:
     def gate(state: SegmentState) -> SegmentState:
         if not state["text"].strip():
             return {"outcome": "empty"}
-        verdict = run_gate(deps.llm, state["text"], state.get("subject", ""))
+        questions = load_waiting_questions(deps.session, state["project_id"])
+        verdict = run_gate(deps.llm, state["text"], state.get("subject", ""), questions)
         return {} if verdict.has_change else {"outcome": "gated_out"}
 
     def extract(state: SegmentState) -> SegmentState:
@@ -66,6 +74,7 @@ def build_graph(deps: PipelineDeps) -> Any:
             current=load_active(deps.session, state["project_id"]),
             categories=deps.settings.categories,
             rejected_feedback=previous.rejected if previous else (),
+            questions=load_waiting_questions(deps.session, state["project_id"]),
         )
         return {"ops": list(result.ops), "attempt": state.get("attempt", 0) + 1}
 
@@ -79,6 +88,7 @@ def build_graph(deps: PipelineDeps) -> Any:
             embedder=deps.embedder,
             settings=deps.settings,
             source_date=state.get("source_date"),
+            questions=load_waiting_questions(deps.session, state["project_id"]),
         )
         return {"validation": result}
 
@@ -87,12 +97,16 @@ def build_graph(deps: PipelineDeps) -> Any:
         applied = apply_ops(
             deps.session, state["project_id"], v.accepted, source_date=state.get("source_date")
         )
+        answered = apply_answers(
+            deps.session, state["project_id"], v.answers, source_date=state.get("source_date")
+        )
         conflicts = record_stale(deps.session, state["project_id"], v.stale)
         conflicts += sum(1 for op in v.accepted if op.contradicts)
         return {
             "applied": applied,
+            "answered": answered,
             "conflicts": conflicts,
-            "outcome": "applied" if applied else "flagged",
+            "outcome": "applied" if applied or answered else "flagged",
         }
 
     def no_change(state: SegmentState) -> SegmentState:
@@ -105,7 +119,7 @@ def build_graph(deps: PipelineDeps) -> Any:
         v = state["validation"]
         if v.rejected and state["attempt"] <= max_retries:
             return "extract"
-        return "apply" if (v.accepted or v.stale) else "no_change"
+        return "apply" if (v.accepted or v.stale or v.answers) else "no_change"
 
     g = StateGraph(SegmentState)
     g.add_node("gate", gate)

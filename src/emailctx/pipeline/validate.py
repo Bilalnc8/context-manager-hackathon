@@ -18,6 +18,15 @@ Conflicts (latest wins, a person confirms):
 7. modify the judge says contradicts the current text -> applied (it is the latest)
    and recorded under "Needs confirmation".
 
+Finished work stays finished:
+8. an add the judge maps onto a done or verified requirement, with a different meaning
+   that doesn't contradict it, stays an add: new work on top of finished work is a new
+   item. (A modify of finished work reopens it; see apply.)
+
+Answers to the client questions:
+9. answer must pass the evidence check, name a question that is still waiting (open or
+   asked), and answer each question at most once per email.
+
 Rejected ops can be sent back to extraction for a retry. Dropped ops are legitimate
 no-ops and are not retried.
 """
@@ -29,8 +38,17 @@ from datetime import datetime
 
 from emailctx.config import Settings
 from emailctx.llm import LLMClient
-from emailctx.pipeline.ops import AddOp, JudgeResult, ModifyOp, NoneOp, RemoveOp
-from emailctx.pipeline.types import AcceptedOp, AnyOp, OpOutcome, ReqView, ValidationResult
+from emailctx.pipeline.ops import AddOp, AnswerOp, JudgeResult, ModifyOp, NoneOp, RemoveOp
+from emailctx.pipeline.types import (
+    AcceptedAnswer,
+    AcceptedOp,
+    AnyOp,
+    OpOutcome,
+    QuestionView,
+    ReqView,
+    ValidationResult,
+)
+from emailctx.store.models import FINISHED_STATES
 from emailctx.routing.embeddings import Embedder
 from emailctx.textnorm import clean_requirement_text, normalize_match, normalize_requirement
 
@@ -75,8 +93,11 @@ def validate_ops(
     embedder: Embedder,
     settings: Settings,
     source_date: datetime | None = None,
+    questions: Sequence[QuestionView] = (),
 ) -> ValidationResult:
     result = ValidationResult()
+    waiting = {q.question_id for q in questions}
+    answered: set[str] = set()
 
     def is_stale(req: ReqView) -> bool:
         return source_date is not None and req.updated_at is not None and source_date < req.updated_at
@@ -106,6 +127,20 @@ def validate_ops(
             continue
         if evidence not in source_norm:
             reject(op, "evidence not found in the email")
+            continue
+
+        if isinstance(op, AnswerOp):
+            qid = op.question_id.strip().upper()
+            answer = clean_requirement_text(op.answer)
+            if qid not in waiting:
+                reject(op, f"unknown or already answered question id {op.question_id}")
+            elif qid in answered:
+                drop(op, f"{qid} already answered by an earlier op in this email")
+            elif not answer:
+                reject(op, "empty answer")
+            else:
+                answered.add(qid)
+                result.answers.append(AcceptedAnswer(qid, answer, op.evidence, msg_id))
             continue
 
         if isinstance(op, (ModifyOp, RemoveOp)):
@@ -163,6 +198,13 @@ def validate_ops(
             if dup is not None and dup in {c.req_id for c in candidates}:
                 if verdict.same_meaning:
                     drop(op, f"duplicate of {dup} (judge)")
+                    continue
+                finished = active[dup].delivery in FINISHED_STATES and not verdict.contradicts
+                if finished:  # new work on top of finished work: a new item
+                    added_norms.add(norm)
+                    result.accepted.append(
+                        AcceptedOp("add", None, text, category, op.evidence, msg_id)
+                    )
                     continue
                 if dup in targeted:
                     drop(op, f"{dup} already changed by an earlier op in this email")

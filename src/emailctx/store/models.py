@@ -1,13 +1,12 @@
 """SQLite schema. Mirrors the Data model section of docs/DESIGN.md.
 
-Email content is never stored in this database. Emails are cleaned, gated, extracted
-and validated in memory; copies of company emails and their attachments live only in
-the company's Drive folder. The DB keeps only what idempotency, threading and
-citations need:
-- `messages`: msg_id, gmail_id, thread_id, subject, date, attachment file names.
-  No body, no addresses.
+The database is the single source of truth, including the text of every client input:
+- `messages`: msg_id, gmail_id, thread_id, subject, date, attachment file names, the
+  sender, and `body`: the text the pipeline read (cleaned: quoted replies and
+  signatures removed, attachment text appended). Every citation can be opened from it,
+  including input pasted into a Claude session, which exists nowhere else.
 - `thread_paragraphs`: SHA-256 of each cleaned paragraph, so later replies in the
-  thread can drop repeated (quoted) paragraphs without the text being kept.
+  thread can drop repeated (quoted) paragraphs.
 - `change_log`: what changed in the requirement and which email caused it. The verbatim
   evidence quote is checked against the email in memory and then discarded.
 
@@ -130,7 +129,7 @@ class ReviewQueue(Base):
 
 
 class Message(Base):
-    """Metadata only. The email body is never stored."""
+    """An email or other client input, with the cleaned text the pipeline read."""
 
     __tablename__ = "messages"
     # RFC Message-ID without angle brackets, or "sha256:<hex>" when the header is missing.
@@ -140,7 +139,9 @@ class Message(Base):
     subject: Mapped[str | None] = mapped_column(Text, nullable=True)  # for citations
     date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     attachments: Mapped[list | None] = mapped_column(JSON, nullable=True)  # file names only
-    source: Mapped[str] = mapped_column(String)  # eml | gmail
+    sender: Mapped[str | None] = mapped_column(String, nullable=True)  # From header
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)  # cleaned text + attachments
+    source: Mapped[str] = mapped_column(String)  # eml | gmail | pasted
     ingested_at: Mapped[datetime] = mapped_column(DateTime)
 
 
@@ -180,6 +181,58 @@ class Requirement(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     source_ids: Mapped[list] = mapped_column(JSON, default=list)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Delivery progress, set by the team (coding agent, QA), never by the email pipeline,
+    # except that a client change to finished work reopens it.
+    delivery: Mapped[str] = mapped_column(String, default="open")  # see DELIVERY_STATES
+    delivery_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    __table_args__ = (UniqueConstraint("project_id", "seq"),)
+
+
+DELIVERY_STATES = ("open", "in_progress", "done", "verified")
+FINISHED_STATES = ("done", "verified")
+
+
+class StatusChange(Base):
+    """Every delivery status change: who set it (a person, an agent, or an email that
+    reopened finished work) and why."""
+
+    __tablename__ = "status_changes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.project_id"), index=True)
+    req_id: Mapped[str] = mapped_column(String)
+    old_status: Mapped[str] = mapped_column(String)
+    new_status: Mapped[str] = mapped_column(String)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    changed_by: Mapped[str] = mapped_column(String)  # user email, "agent", or "email <msg_id>"
+    changed_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+QUESTION_STATES = ("open", "asked", "answered", "withdrawn")
+
+
+class Question(Base):
+    """A question only the client can answer.
+
+    open: logged, not sent yet. asked: sent to the client (asked once, never again).
+    answered: the client's answer, from an email (answer_source_id = its msg_id) or
+    recorded by a person (answer_source_id None). withdrawn: no longer needed.
+    """
+
+    __tablename__ = "questions"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.project_id"), primary_key=True)
+    question_id: Mapped[str] = mapped_column(String, primary_key=True)  # Q-001
+    seq: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    normalized_text: Mapped[str] = mapped_column(Text)
+    req_id: Mapped[str | None] = mapped_column(String, nullable=True)  # the item it blocks
+    status: Mapped[str] = mapped_column(String, default="open")
+    created_by: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    asked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answer_source_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    answered_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     __table_args__ = (UniqueConstraint("project_id", "seq"),)
 
 

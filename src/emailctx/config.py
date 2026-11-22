@@ -113,6 +113,8 @@ class GmailSettings(BaseModel):
     # contacts, keywords, meeting bots). "" = all mail.
     query: str | None = None
     backfill_max: int | None = 200
+    # `emailctx serve` checks Gmail every N minutes (0 = off; --poll-minutes overrides).
+    poll_minutes: float = 0
 
 
 class BootstrapSettings(BaseModel):

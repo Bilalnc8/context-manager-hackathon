@@ -200,7 +200,7 @@ def test_sync_applies_requirement_changes(genv):
     [(_, result)] = sync(genv, g, llm=llm).results
     assert result.outcome == "applied"
     md = genv.md_bytes("globex").decode()
-    assert "- **REQ-001** The portal must support SSO via Okta.[^1]" in md
+    assert "- **REQ-001** [open] The portal must support SSO via Okta.[^1]" in md
     assert '[^1]: Email "Update 1", 2026-11-01, ID `g1@globex.com`' in md
 
 

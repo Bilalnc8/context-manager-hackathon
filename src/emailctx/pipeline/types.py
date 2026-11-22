@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
-from emailctx.pipeline.ops import AddOp, ModifyOp, NoneOp, RemoveOp
+from emailctx.pipeline.ops import AddOp, AnswerOp, ModifyOp, NoneOp, RemoveOp
 
-AnyOp = AddOp | ModifyOp | RemoveOp | NoneOp
+AnyOp = AddOp | ModifyOp | RemoveOp | AnswerOp | NoneOp
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,24 @@ class ReqView:
     category: str
     updated_at: datetime | None = None  # date of the email behind the last change
     last_source_id: str | None = None
+    delivery: str = "open"  # open | in_progress | done | verified
+
+
+@dataclass(frozen=True)
+class QuestionView:
+    """A question waiting for the client's answer (open or asked)."""
+
+    question_id: str
+    text: str
+    req_id: str | None = None
+
+
+@dataclass(frozen=True)
+class AcceptedAnswer:
+    question_id: str
+    answer: str
+    evidence: str  # validated in memory, never persisted
+    msg_id: str
 
 
 @dataclass(frozen=True)
@@ -50,6 +68,7 @@ class ValidationResult:
     # Valid changes from an email older than the requirement's last change. Latest wins:
     # not applied, recorded as conflicts for a person to confirm.
     stale: list[AcceptedOp] = field(default_factory=list)
+    answers: list[AcceptedAnswer] = field(default_factory=list)  # client answers to questions
 
 
 @dataclass(frozen=True)

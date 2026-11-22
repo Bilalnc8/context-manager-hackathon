@@ -1,17 +1,16 @@
-"""Fetching a company's .md from Drive by name: lookup, CLI, and the MCP server."""
+"""Fetching a company's .md from Drive by name: lookup and the `emailctx context` CLI.
+
+The MCP server works on the requirements store instead: see test_tracker.py."""
 
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 from fakes import FakeDrive
 from typer.testing import CliRunner
 
-from emailctx.auth import AuthError
 from emailctx.context import CompanyNotFound, fetch_context, find_company, list_company_files
 from emailctx.drive import DrivePublisher, DriveStore
-from emailctx.mcp_server import build_server
 
 ROOT = "Client Context"
 COMPANIES = {"acme": "Acme Corp", "globex": "Globex", "globe-tech": "Globe Tech"}
@@ -85,44 +84,3 @@ def test_context_cli(store, monkeypatch):
 
 # --- MCP server ---------------------------------------------------------------------------------
 
-
-def text_of(result) -> str:
-    return "".join(getattr(c, "text", "") for c in result.content)
-
-
-def test_mcp_server_tools(store):
-    server = build_server(lambda: store)
-    tools = {t.name for t in asyncio.run(server.list_tools())}
-    assert {"list_companies", "get_company_context"} <= tools
-
-    got = text_of(asyncio.run(server.call_tool("get_company_context", {"company": "acme"})))
-    assert got.startswith("<!-- Acme Corp.md from Google Drive, last updated 2026-11-21")
-    assert "- **REQ-001** Something for Acme Corp." in got
-
-    listed = text_of(asyncio.run(server.call_tool("list_companies", {})))
-    assert listed.splitlines() == [
-        "- Acme Corp (updated 2026-11-21)", "- Globe Tech (updated 2026-11-21)",
-        "- Globex (updated 2026-11-21)",
-    ]
-    unknown = text_of(asyncio.run(server.call_tool("get_company_context", {"company": "nope"})))
-    assert "no company file matches 'nope'" in unknown
-
-
-def test_mcp_prompt_loads_a_company(store):
-    server = build_server(lambda: store)
-    result = asyncio.run(server.get_prompt("company", {"name": "Acme"}))
-    text = "".join(getattr(m.content, "text", "") for m in result.messages)
-    assert "get_company_context" in text and "'Acme'" in text
-
-
-def test_mcp_server_starts_signed_out_and_says_what_to_do():
-    calls = []
-
-    def not_signed_in():
-        calls.append(1)
-        raise AuthError("not signed in to Google: run `emailctx auth`")
-
-    server = build_server(not_signed_in)
-    assert calls == []  # building the server doesn't touch Google
-    got = text_of(asyncio.run(server.call_tool("get_company_context", {"company": "acme"})))
-    assert got == "Could not reach Google Drive: not signed in to Google: run `emailctx auth`"

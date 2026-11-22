@@ -1,7 +1,9 @@
 """Deterministic rendering of one context.md per company from the store.
 
-Layout: each company has one project, so the file is the project's requirements grouped
-by category in config order and sorted by numeric ID, then "Needs confirmation" and the
+Layout: each company has one project, so the file is a status summary, then the
+project's requirements grouped by category in config order and sorted by numeric ID, each
+with its delivery status (open, in progress, done, verified), then the questions waiting
+for the client, the questions the client answered, "Needs confirmation" and the
 changelog. (Should a company ever hold several projects, each gets its own section and
 changelog lines name the project.) Each requirement
 and changelog entry cites its source emails as markdown footnotes:
@@ -17,6 +19,7 @@ Same store contents -> same bytes: no wall-clock times, "\n" line endings.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -26,10 +29,19 @@ from sqlalchemy.orm import Session
 
 from emailctx.config import Settings
 from emailctx.render.publish import Publisher, PublishResult
-from emailctx.store.models import ChangeLog, Company, Conflict, Message, Project, Requirement
+from emailctx.store.models import (
+    ChangeLog,
+    Company,
+    Conflict,
+    Message,
+    Project,
+    Question,
+    Requirement,
+)
 
 _TEMPLATES = Path(__file__).parent / "templates"
 _VERBS = {"add": "added", "modify": "modified", "remove": "removed"}
+_DELIVERY = {"open": "open", "in_progress": "in progress", "done": "done", "verified": "verified"}
 
 _env = Environment(
     loader=FileSystemLoader(_TEMPLATES),
@@ -63,7 +75,19 @@ def _footnote_text(msg_id: str, message: Message | None) -> str:
     return ", ".join(parts)
 
 
-def render_company(session: Session, company_id: str, settings: Settings) -> str:
+@dataclass
+class _Loaded:
+    company: Company
+    projects: Sequence[Project]
+    reqs: Sequence[Requirement]
+    changes: Sequence[ChangeLog]
+    conflicts: Sequence[Conflict]
+    questions: Sequence[Question]
+    messages: dict[str, Message]
+    numbers: dict[str, int]  # cited msg_id -> footnote number
+
+
+def _load(session: Session, company_id: str) -> _Loaded:
     company = session.get(Company, company_id)
     if company is None:
         raise KeyError(f"unknown company {company_id}")
@@ -90,8 +114,16 @@ def render_company(session: Session, company_id: str, settings: Settings) -> str
         .order_by(Conflict.conflict_id)
     ).all()
 
+    questions = session.scalars(
+        select(Question)
+        .where(Question.project_id.in_(project_ids), Question.status != "withdrawn")
+        .order_by(Question.project_id, Question.seq)
+    ).all()
+
     # Footnotes: every cited email, numbered by (date, msg_id).
     cited = (
+        {q.answer_source_id for q in questions if q.answer_source_id}
+        |
         {m for r in reqs for m in r.source_ids}
         | {c.source_id for c in changes}
         | {c.other_source_id for c in conflicts}
@@ -107,6 +139,20 @@ def render_company(session: Session, company_id: str, settings: Settings) -> str
         return (d is None, d or datetime.min, msg_id)
 
     numbers = {msg_id: n for n, msg_id in enumerate(sorted(cited, key=order), start=1)}
+    return _Loaded(company, projects, reqs, changes, conflicts, questions, messages, numbers)
+
+
+def footnotes(session: Session, company_id: str) -> dict[int, tuple[str, Message | None]]:
+    """Footnote number -> (msg_id, its message), numbered exactly as in the rendered file."""
+    d = _load(session, company_id)
+    return {n: (m, d.messages.get(m)) for m, n in d.numbers.items()}
+
+
+def render_company(session: Session, company_id: str, settings: Settings) -> str:
+    d = _load(session, company_id)
+    company, projects, reqs, changes = d.company, d.projects, d.reqs, d.changes
+    conflicts, questions, messages, numbers = d.conflicts, d.questions, d.messages, d.numbers
+    project_names = {p.project_id: p.name for p in projects}
 
     def refs(msg_ids: Sequence[str]) -> str:
         return "".join(f"[^{n}]" for n in sorted(numbers[m] for m in set(msg_ids)))
@@ -125,7 +171,12 @@ def render_company(session: Session, company_id: str, settings: Settings) -> str
                     {
                         "title": category_title(cat),
                         "reqs": [
-                            {"req_id": r.req_id, "text": r.text, "refs": refs(r.source_ids)}
+                            {
+                                "req_id": r.req_id,
+                                "text": r.text,
+                                "refs": refs(r.source_ids),
+                                "delivery": _DELIVERY.get(r.delivery, r.delivery),
+                            }
                             for r in members
                         ],
                     }
@@ -177,8 +228,33 @@ def render_company(session: Session, company_id: str, settings: Settings) -> str
             )
         needs_confirmation.append(f"{head}: {body}")
 
+    counts = {k: sum(1 for r in reqs if r.delivery == k) for k in _DELIVERY}
+    waiting = [q for q in questions if q.status in ("open", "asked")]
+    status_line = ""
+    if reqs or questions:
+        status_line = " · ".join(f"{counts[k]} {label}" for k, label in _DELIVERY.items())
+        status_line += f" · {len(waiting)} question{'' if len(waiting) == 1 else 's'} for the client"
+
+    def question_line(q: Question) -> str:
+        where = "" if single else f"{project_names[q.project_id]} · "
+        about = f" (about {q.req_id})" if q.req_id else ""
+        return f"{where}**{q.question_id}**{about} {q.text}"
+
+    open_questions = []
+    for q in waiting:
+        state = f"asked {_day(q.asked_at)}, waiting for the answer" if q.status == "asked" else "not asked yet"
+        open_questions.append(f"{question_line(q)} _({state})_")
+    answered = []
+    for q in questions:
+        if q.status == "answered":
+            source = refs([q.answer_source_id]) if q.answer_source_id else f" _(recorded by {q.answered_by})_"
+            answered.append(f"{question_line(q)} **Answer:** {q.answer}{source}")
+
     text = _env.get_template("context.md.j2").render(
         company={"company_id": company.company_id, "name": company.name},
+        status_line=status_line,
+        open_questions=open_questions,
+        answered_questions=answered,
         projects=project_blocks,
         single=single,
         needs_confirmation=needs_confirmation,

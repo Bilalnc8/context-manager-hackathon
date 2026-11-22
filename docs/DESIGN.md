@@ -6,7 +6,7 @@ Nov 21, 2026 · @mustafa
 
 The system reads a connected Gmail account, sorts each email into the right company (each company has exactly one project), and keeps one `<Company>.md` per company describing its requirements. Each company has a Google Drive folder holding that file, a readable copy of every email routed to the company, and those emails' attachments (e.g. meeting-summary PDFs). A company's first file is built from the last 100 days of its mail; after that the file changes only when a requirement is added, modified or removed.
 
-The requirements database holds no email bodies: emails are checked for requirement changes in memory, and their copies live only in the company's Drive folder.
+The database is the single source of truth, including the cleaned text of every client input (synced email, `.eml` file, or text pasted into a Claude session), so every citation can be opened. Google Drive is an optional published view, off by default.
 
 **Core principle:** the LLM never writes the markdown. It only proposes structured changes to a requirements store. Code validates those changes, and a deterministic template renders the `.md` from the store. If no material change passes validation, the rendered output is byte-identical and the file is not touched.
 
@@ -82,7 +82,7 @@ Stripping quoted replies matters more than it looks. Without it, every reply re-
 - Strip quoted replies (`On ... wrote:`, `>` lines) and signatures
 - Extract text from PDF and doc attachments if requirements live there
 - Text of PDF and text attachments is appended to the cleaned body (`--- Attachment: <name> ---`), so decisions in meeting summaries count and their quotes pass the evidence check.
-- Keep the cleaned text in memory only: the validation step checks evidence quotes against it, then it is discarded (the email's copy lives in Drive, not in the database). To catch quoted history in later replies, only SHA-256 hashes of each cleaned paragraph are stored per thread.
+- Store the cleaned text (quotes and signatures already removed, attachment text appended) with the message, so citations can be opened (`get_source`). Evidence quotes are checked against it in memory and not stored. To catch quoted history in later replies, SHA-256 hashes of each cleaned paragraph are stored per thread.
 
 ## Project routing
 
@@ -178,7 +178,7 @@ These three steps run per project segment. Validation is where "only change when
 
 ## Data model
 
-SQLite is the source of truth. The `.md` files are views of it. Postgres works the same way if this moves to a server. No table holds email bodies, addresses or evidence quotes.
+SQLite is the source of truth. The `.md` files are views of it. Postgres works the same way if this moves to a server. `messages` holds each input's cleaned text and sender; no table holds raw emails, quoted history, signatures or evidence quotes.
 
 | Table | Key columns | Purpose |
 |---|---|---|
@@ -193,13 +193,15 @@ SQLite is the source of truth. The `.md` files are views of it. Postgres works t
 | review_queue | msg_id, kind (project, new company), candidates, reason, source_ref, status | Low-confidence emails and unknown domains waiting for a person; the email is re-read from source_ref (Gmail or file) |
 | conflicts | project_id, req_id, kind (contradiction, stale), kept_text, other_text, kept_source_id, other_source_id, status | "Needs confirmation" items |
 | segments | segment_id, msg_id, project_id | Which projects a message was routed to (segment text stays in memory) |
-| requirements | req_id, project_id, text, category, status, version, source_ids, updated_at | Current requirements per project |
+| requirements | req_id, project_id, text, category, status, version, source_ids, updated_at, delivery, delivery_note | Current requirements per project; `delivery` is open, in_progress, done or verified |
 | change_log | req_id, op, old_text, new_text, source_id, timestamp | History behind every change |
-| messages | msg_id, gmail_id, thread_id, subject, date | Email metadata for idempotency, threading and citations; no body |
+| messages | msg_id, gmail_id, thread_id, subject, date, sender, body | Idempotency, threading and citations; `body` is the cleaned text the pipeline read |
 | thread_paragraphs | thread_id, para_hash, first_seen | Paragraph hashes for dropping quoted history; no text |
 | processed_messages | msg_id, outcome | Idempotency |
 | drive_revisions | file_id, revision_id, text_hash | Last seen version of each Drive file |
 | sync_state | account, history_id, drive_page_token, last_run | Incremental sync cursors |
+| status_changes | project_id, req_id, old_status, new_status, note, changed_by, changed_at | Delivery status history (see the MCP server section) |
+| questions | project_id, question_id, text, req_id, status (open, asked, answered, withdrawn), asked_at, answer, answer_source_id, answered_by | Questions only the client can answer |
 
 Implementation additions (see Decisions below): `requirements` keyed on `(project_id, req_id)` with a `normalized_text` column, and `change_log` rows carrying `project_id` and an autoincrement `change_id`.
 
@@ -249,9 +251,9 @@ Gmail sync comes before routing so that real synced emails can serve as routing 
 - **Message IDs.** The RFC `Message-ID` header is the dedupe key (`msg_id`). Gmail's own message ID lives in its own column. If `Message-ID` is missing, `msg_id` falls back to a SHA-256 of from + date + subject + cleaned body.
 - **Requirement IDs** are assigned by code (`REQ-001`, `REQ-002`, … per project) and never reused. The LLM never picks the ID for an `add`.
 - **Remove** sets `status = removed`; rows are never deleted, so history and citations survive.
-- **Where emails live.** The database never holds email bodies, addresses or evidence quotes. A readable `.txt` copy of every email routed to a company (headers, then the full body) and its attachments are stored in that company's Drive folder. Emails waiting in review are not copied until a person assigns them (their company is unknown). Evidence quotes are validated in memory and discarded; citations are the email's ID (when it has a Message-ID), subject, date and attachment names.
+- **Where emails live.** Each input's cleaned text and sender are stored with its message (changed from the first design, which kept no bodies: once the MCP server became the shared store, pasted input existed nowhere else). Gmail keeps the originals of synced mail. With Drive output on, a readable `.txt` copy of every email routed to a company and its attachments also go to that company's Drive folder. Evidence quotes are validated in memory and discarded; citations are the email's ID (when it has a Message-ID), subject, date and attachment names, and `get_source` opens the stored text.
 - **One project per company, one file per company.** Each company has exactly one project; the registry and the CLI refuse a second one. So a company's `context.md` is simply its project's requirements (categories as `##` sections, no project heading). `--company` alone is enough on `ingest-file` and `review assign`: it means the company's project, created with the company's id and name if needed.
-- **Output.** Google Drive is the main destination (`output.drive`), described below. S3 (optional) is enabled by setting `output.s3.bucket` in config; credentials come from boto3's standard chain and are never logged. Turning on bucket versioning gives history and rollback. Each S3 object carries a `change` metadata line describing the change and its source email. Optionally (`output.git_commit`), the local output folder is its own git repo with one commit per changed file, e.g. `atlas: REQ-001 modify (email <id>, 2026-11-19)`.
+- **Output.** The local folder (`output.local_dir`) is on by default; Google Drive (`output.drive`, described below) is optional and off by default, since the MCP server reads the database directly. S3 (optional) is enabled by setting `output.s3.bucket` in config; credentials come from boto3's standard chain and are never logged. Turning on bucket versioning gives history and rollback. Each S3 object carries a `change` metadata line describing the change and its source email. Optionally (`output.git_commit`), the local output folder is its own git repo with one commit per changed file, e.g. `atlas: REQ-001 modify (email <id>, 2026-11-19)`.
 
 ### Gmail (Phase 2)
 
@@ -269,11 +271,29 @@ Gmail sync comes before routing so that real synced emails can serve as routing 
 - **Incremental query:** with `gmail.query: null` (default) the sync query is built from the registry (all companies' domains, contacts, keywords and meeting bots). Set a query such as `label:clients` to also catch mail from unknown domains (which then go to review as new companies).
 - **Meeting bots** (`routing.meeting_bot_domains`: fireflies.ai, otter.ai, …): the sender's domain carries no company signal and never becomes a pending company. The subject, body, attachment names and attachment text are searched (word boundaries, terms of 3+ characters) for each company's name and id, its project's name, id and keywords, and its domains. One company named → assigned (step `meeting_bot`); several → review; none → the usual rules (usually review).
 
-### Loading a company's file into a Claude session
+### The MCP server: one shared tracker for every Claude session
 
-- `emailctx mcp` is a read-only MCP server (stdio) registered once at user scope (`claude mcp add emailctx --scope user -e EMAILCTX_CONFIG=<config.yaml> -- <venv>/emailctx.exe mcp`), so every new Claude Code session has it. Tools: `get_company_context(company)` returns `<Company>.md` from Drive; `list_companies()`. Prompt: `/mcp__emailctx__company <name>` loads the file and summarizes it.
-- Lookup lists the app's `.md` files straight from Drive (no local database needed): case-insensitive, `.md` optional, a unique part of the name is enough; ambiguous or unknown names return the list of companies that do have a file.
-- `emailctx context <name>` prints the same file in a terminal; `emailctx context` lists companies.
+The challenge (`docs/challenge-8.md`) needs more than a requirements list: any agent in any new session must know what is **done, open and verified**, and what the client **already answered**. So the MCP server is the product's front door, hosted once for the team and connected from Claude Code, Claude Desktop or claude.ai.
+
+```
+Claude Code / Claude Desktop / claude.ai
+        │  MCP over HTTPS (streamable HTTP); Google sign-in = login only (phase 2)
+        ▼
+emailctx serve ── tools ──► central store (SQLite) ──► <Company>.md (local / Drive / S3)
+        ▲
+client input: pasted into a session (add_client_input), .eml files, team Gmail sync
+```
+
+- **Transport.** `emailctx serve` runs streamable HTTP at `/mcp` (Claude Code: `claude mcp add --transport http emailctx http://localhost:8000/mcp`). `--allowed-host` accepts a tunnel's hostname (DNS-rebinding protection is on). `emailctx mcp` runs the same server over stdio for one machine.
+- **Reads the store, not Drive.** Every tool works on the central database, so all agents and teammates see the same state and Drive is optional. `get_company_context` renders the `.md` fresh from the store (the same bytes the publishers write).
+- **Tools.** Read: `list_companies` (counts per status), `get_company_context`, `list_items(status?)`, `list_questions`, `get_source` (the text behind a footnote). Write: `set_item_status`, `log_question`, `mark_questions_asked`, `record_answer`, `withdraw_question`, `add_client_input`. Prompt: `/mcp__emailctx__company <name>`. The server instructions tell the agent the loop: load context first, mark work done, check questions before asking, capture pasted client input.
+- **Delivery status** (`requirements.delivery`: open → in_progress → done → verified) is set by the team, never by the email pipeline, with every change in `status_changes` (who, when, note). Two rules keep finished items finished: an `add` the judge maps onto a done/verified requirement stays a new item (new work on top of finished work) unless it contradicts it; a `modify` of finished work (the client changed what was delivered) reopens it, logged as `changed_by = email <msg_id>`.
+- **Client questions** (`questions`, `Q-001` per project): `log_question` never logs the same normalized text twice, and returns the earlier question (with its answer, if any) instead, so the client is never asked twice. `mark_questions_asked` refuses a question that isn't open. Answers arrive two ways: an email or pasted input through the pipeline (the gate and extraction see the waiting questions; extraction returns an `answer` op with evidence, validated like every other op), or `record_answer` for an answer given on a call.
+- **Pasted input** (`add_client_input`) is wrapped as an email (From the company's domain, no Message-ID, date default now) and runs the normal pipeline with the company given, so it gets the evidence check, dedupe and conflict rules. Same text, subject, sender and date → same hash ID → processed once.
+- **Many users, one writer.** `emailctx serve` is one process that owns the database: every tool call and the Gmail poller share one runtime with one write lock. A write (an email's whole ingest, a status change, a logged question) holds it from its first database write through rendering and publishing the file, so writes take turns instead of failing on SQLite's lock, and an older render can never overwrite a newer file. SQLite runs in WAL mode, so reads never wait, and `busy_timeout` (30 s) covers a second process, such as a CLI ingest while the server runs. A write that arrives during an email's LLM calls waits for them (seconds).
+- **Gmail in the server.** `emailctx serve --poll-minutes 5` (or `gmail.poll_minutes`) runs `GmailSync` in a background thread on the server's runtime: once at start, then every N minutes. It needs `emailctx auth` once on the server machine, signed in as the shared inbox. Errors are logged and retried next round; the cursor only advances after a batch fully succeeds.
+- **Identity.** Writes record `current_user()`: the signed-in user once Google sign-in is on (phase 2), `agent` until then.
+- `emailctx context <name>` still prints a company's file from Drive in a terminal.
 
 ### Routing (Phase 3)
 
@@ -290,3 +310,82 @@ Gmail sync comes before routing so that real synced emails can serve as routing 
 - **Contradictions:** the judge also returns `contradicts`. A modify that reverses the current text (not one that extends it) is applied and recorded as a `contradiction` conflict.
 - Open conflicts render under "Needs confirmation", citing both emails. `emailctx conflicts confirm C<n>` accepts the current text; `--use-other` switches to the other email's version, cited to that email.
 - **Models and thresholds** live in `config.yaml`. Extraction defaults to `claude-opus-5-5`; the gate and the judge default to `claude-haiku-5-5`.
+
+## Google auth: setup and handoff
+
+There are two separate Google setups. They can share one Google Cloud project, as two OAuth clients:
+
+| | 1. Inbox reading | 2. MCP server user login |
+|---|---|---|
+| Purpose | emailctx reads client email from one shared inbox | Teammates prove who they are when Claude connects |
+| OAuth client type | Desktop app (`client_secret.json`) | Web application |
+| Scopes | `gmail.readonly` | `openid`, `email` |
+| Who signs in | The shared inbox, once, with `emailctx auth` | Every teammate, on first connect from Claude |
+| Status | Built | Not built yet (spec below) |
+| In production | Replaced by email forwarding to `/inbound` (not built yet) | Still needed |
+
+### 1. Inbox reading: set up `emailctx auth` (built)
+
+1. In [Google Cloud Console](https://console.cloud.google.com), create a project. Any Google account can own it; it doesn't have to be the inbox's.
+2. APIs & Services → Library → **Gmail API** → Enable.
+3. OAuth consent screen (Google Auth Platform):
+   - Audience: **External** and leave it in **Testing**, then add the inbox address under **Test users**. If the inbox is on Google Workspace and the project was created in that Workspace, choose **Internal** instead: no test-user list and no 7-day token expiry.
+   - Branding: app name `emailctx`, plus a support email.
+4. Clients → Create client → **Desktop app** → download the JSON and save it in the repo root as `client_secret.json`. It's gitignored; `google.client_secrets` in `config.yaml` sets the path, relative to the config file.
+5. With Drive output off, remove `drive.file` from `google.scopes` in `config.yaml`, so the consent screen asks only for Gmail.
+6. Run `emailctx auth`. A browser opens: sign in as the inbox, click through "Google hasn't verified this app" (expected in Testing), and allow read-only Gmail access. The token (with its refresh token) goes into the OS keyring; `emailctx auth --logout` removes it.
+7. Run `emailctx serve --poll-minutes 1`. The server checks the inbox at start, then every minute, and logs each change.
+
+Things to know:
+
+- `emailctx auth` and `emailctx serve` must run on the same machine as the same OS user, because the token lives in that user's keyring.
+- With External/Testing, Google expires the refresh token after 7 days. The poller then logs "not signed in"; run `emailctx auth` again.
+- Test emails sent from a `@gmail.com` address can't be matched to a client by domain. List that exact address under the company's `contacts` in `registry.yaml`, or the emails go to the review queue.
+- The first poll reads at most `gmail.backfill_max` (200) of the most recent matching emails. After that, only new mail.
+
+### 2. MCP server user login (to build)
+
+**Goal.** Claude Code, Claude Desktop or claude.ai connects to `emailctx serve`, the user signs in with Google once in a browser, and only accounts from allowed domains get in. Every write then records the user's email instead of `agent`.
+
+**Why the server sits in the middle.** When an MCP client like Claude meets a server that requires login, it discovers the server's OAuth endpoints and registers itself automatically (dynamic client registration). Google doesn't support that, so Claude can't use Google directly. emailctx itself acts as the OAuth authorization server for Claude and hands only the sign-in step to Google:
+
+```
+Claude ──► emailctx /mcp: 401 + where to log in
+Claude ──► emailctx /register: Claude registers itself (stored in SQLite)
+Claude ──► emailctx /authorize ──► redirect to Google sign-in (openid email, state, PKCE)
+                                        │ user picks their Google account
+emailctx /oauth/google/callback ◄───────┘ code
+   exchange code with Google, verify the ID token, check email_verified and the domain
+   ──► issue an emailctx authorization code, redirect to Claude's callback
+Claude ──► emailctx /token: emailctx access + refresh tokens
+Claude ──► every /mcp call: Bearer token, checked on each request; the user is known
+```
+
+**Google Cloud setup** (same project as above):
+
+1. Clients → Create client → **Web application**.
+2. Authorized redirect URIs: `http://localhost:8000/oauth/google/callback` for local testing, and `https://<server-host>/oauth/google/callback` once deployed.
+3. Scopes: only `openid` and `email` (basic scopes; no Google review).
+4. While the project also holds the Gmail client in External/Testing, every teammate who signs in must be added as a test user. In production, forwarding replaces the Gmail client, so the project asks only for basic scopes and can be published to External with no review (the server's domain check keeps outsiders out), or set to Internal on Workspace.
+5. Proposed environment variables: `EMAILCTX_GOOGLE_CLIENT_ID`, `EMAILCTX_GOOGLE_CLIENT_SECRET`, `EMAILCTX_ALLOWED_DOMAINS` (comma-separated, e.g. `yourcompany.com`), `EMAILCTX_PUBLIC_URL` (the issuer URL, e.g. `https://mcp.yourcompany.com`). Keep secrets in `.env` (gitignored), never in `config.yaml`.
+
+**Where it plugs in:**
+
+- `build_server()` in `src/emailctx/mcp_server.py` passes extra keyword arguments to `MCPServer(...)`. Give it `auth_server_provider=<GoogleProxyProvider>` and `auth=AuthSettings(issuer_url=..., resource_server_url=..., client_registration_options=ClientRegistrationOptions(enabled=True))` from `mcp.server.auth.settings`. The SDK then serves the discovery metadata, `/register`, `/authorize` and `/token` itself.
+- Write one class implementing `OAuthAuthorizationServerProvider` from `mcp/server/auth/provider.py`:
+  - `register_client` / `get_client`: save and look up Claude's registration.
+  - `authorize`: remember the pending request (Claude's redirect URI, its PKCE challenge, its state) under a random key, and return a Google sign-in URL with that key as Google's `state`.
+  - `load_authorization_code` / `exchange_authorization_code`: issue emailctx access and refresh tokens for a code from the callback.
+  - `load_refresh_token` / `exchange_refresh_token`, `load_access_token`, `revoke_token`.
+- Add the Google callback with `server.custom_route("/oauth/google/callback", methods=["GET"])`. Exchange Google's code at `https://oauth2.googleapis.com/token`, verify the ID token with `google.oauth2.id_token.verify_oauth2_token` (`google-auth` is already a dependency), require `email_verified`, check the email's domain against `EMAILCTX_ALLOWED_DOMAINS`, then create an emailctx authorization code and redirect to Claude's callback with Claude's original state.
+- Store clients, pending authorizations, codes and tokens in SQLite: new tables in `src/emailctx/store/models.py`, so a restart doesn't log everyone out. Store token hashes, not raw tokens.
+- Identity: `current_user_default()` in `mcp_server.py` already reads the request's token through `get_access_token()`. Put the user's email on the token as `subject` (or change that function), and every `set_item_status`, `log_question` and `record_answer` records the real user.
+- CLI: add `--auth google` to `emailctx serve` in `src/emailctx/cli.py`. Keep no-auth as the default so the local demo works unchanged.
+
+**Done when:**
+
+- In Claude Code, `claude mcp add --transport http emailctx http://localhost:8000/mcp`, then `/mcp` → Authenticate, opens Google sign-in; after signing in, the tools work.
+- An account outside the allowed domains is refused at the callback.
+- After a status change, `list_items` shows `by <user email>`.
+- Restarting the server doesn't sign anyone out.
+- `emailctx serve` without `--auth` behaves as before, and `pytest` passes, with new tests for the provider using a fake Google token exchange (see `tests/test_tracker.py` for how the server is driven in tests).
