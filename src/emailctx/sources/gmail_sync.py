@@ -32,6 +32,7 @@ from emailctx.store.models import Message, ProcessedMessage, SyncState
 
 SKIP_LABELS = {"DRAFT", "SPAM", "TRASH"}
 _PAGE = 500
+_MATCH_WINDOW_S = 86_400  # see GmailSync._matches_query
 _RETRIES = 3
 
 
@@ -155,7 +156,10 @@ class GmailSync:
         if not self.query:
             return True
         secs = internal_ms // 1000
-        q = f"({self.query}) after:{secs - 60} before:{secs + 60}"
+        # Gmail's after:/before: aren't second-precise: a +-60 s window misses real
+        # matches (seen 2026-11-22: +-60 s missed, +-10 min found). The id check below
+        # makes the result exact, so the window only has to bound the search.
+        q = f"({self.query}) after:{secs - _MATCH_WINDOW_S} before:{secs + _MATCH_WINDOW_S}"
         page = _run(self._users().messages().list(userId="me", q=q, maxResults=_PAGE))
         return any(m["id"] == gmail_id for m in page.get("messages", []))
 
