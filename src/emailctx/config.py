@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 Task = Literal["gate", "extract", "judge"]
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
+Provider = Literal["anthropic", "gemini"]
 T = TypeVar("T")
 
 
@@ -130,6 +131,7 @@ class Settings(BaseModel):
     gmail: GmailSettings = Field(default_factory=GmailSettings)
     bootstrap: BootstrapSettings = Field(default_factory=BootstrapSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
+    provider: Provider = "anthropic"
     models: PerTask[str] = PerTask[str](
         gate="claude-haiku-5-5", extract="claude-opus-5-5", judge="claude-haiku-5-5"
     )

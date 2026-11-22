@@ -295,3 +295,53 @@ class SyncState(Base):
     history_id: Mapped[str | None] = mapped_column(String, nullable=True)
     drive_page_token: Mapped[str | None] = mapped_column(String, nullable=True)
     last_run: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# --- MCP server login (emailctx serve --auth google) ----------------------------
+# Claude registers itself, the user signs in with Google, and emailctx issues its own
+# tokens. Codes and tokens are stored as SHA-256 hashes, never in the clear. Times are
+# Unix seconds, as the MCP SDK compares them with time.time().
+
+class OAuthClient(Base):
+    """A Claude client that registered itself (dynamic client registration)."""
+
+    __tablename__ = "oauth_clients"
+    client_id: Mapped[str] = mapped_column(String, primary_key=True)
+    info_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float)
+
+
+class OAuthPending(Base):
+    """An /authorize request waiting for the user to finish Google sign-in."""
+
+    __tablename__ = "oauth_pending"
+    key_hash: Mapped[str] = mapped_column(String, primary_key=True)  # Google's `state`
+    client_id: Mapped[str] = mapped_column(String)
+    params_json: Mapped[str] = mapped_column(Text)  # Claude's redirect URI, PKCE challenge, state
+    google_verifier: Mapped[str] = mapped_column(String)  # our PKCE verifier toward Google
+    expires_at: Mapped[float] = mapped_column(Float)
+
+
+class OAuthCode(Base):
+    """A one-time emailctx authorization code, handed to Claude after sign-in."""
+
+    __tablename__ = "oauth_codes"
+    code_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    client_id: Mapped[str] = mapped_column(String)
+    data_json: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[float] = mapped_column(Float)
+
+
+class OAuthToken(Base):
+    """An access or refresh token. Both tokens from one grant share a `family`, so
+    revoking or rotating one removes the other."""
+
+    __tablename__ = "oauth_tokens"
+    token_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String)  # access | refresh
+    family: Mapped[str] = mapped_column(String, index=True)
+    client_id: Mapped[str] = mapped_column(String)
+    subject: Mapped[str] = mapped_column(String)  # the user's verified Google email
+    scopes: Mapped[str] = mapped_column(String, default="")  # space-separated
+    resource: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[int | None] = mapped_column(Integer, nullable=True)

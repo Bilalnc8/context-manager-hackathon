@@ -139,6 +139,20 @@ def test_failure_keeps_cursor_and_next_run_resumes(genv):
     assert cursor(genv) == "1002"
 
 
+def test_message_deleted_after_history_listed_it_does_not_block_sync(genv):
+    g = FakeGmail()
+    g.add("a1", mail(1))
+    sync(genv, g)
+    g.add("gone1", mail(2))  # e.g. a draft: in history, deleted before we fetch it
+    del g.store["gone1"]
+    g.add("a2", mail(3))
+
+    report = sync(genv, g)
+    assert report.gone == 1
+    assert [gid for gid, _ in report.results] == ["a2"]
+    assert cursor(genv) == str(g.history_id)  # cursor moves on
+
+
 def test_same_email_from_file_and_gmail_is_processed_once(genv, tmp_path):
     from emailctx.ingest import ingest_file
 
@@ -221,7 +235,7 @@ def test_sync_cli(tmp_path, monkeypatch):
     g = FakeGmail()
     g.add("a1", mail(1))
     monkeypatch.setattr(emailctx.cli, "_gmail_service", lambda settings: g)
-    monkeypatch.setattr(emailctx.llm, "AnthropicLLM", lambda settings: quiet())
+    monkeypatch.setattr(emailctx.llm, "make_llm", lambda settings: quiet())
     runner = CliRunner()
     cfg = ["--config", str(config)]
 

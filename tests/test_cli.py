@@ -20,7 +20,7 @@ def test_ingest_file_cli(tmp_path, monkeypatch):
         name = next(recordings)
         return RecordedLLM.from_file(LLM / f"{name}.json") if name else RecordedLLM({})
 
-    monkeypatch.setattr(emailctx.llm, "AnthropicLLM", fake_llm)
+    monkeypatch.setattr(emailctx.llm, "make_llm", fake_llm)
     runner = CliRunner()
     eml = str(EML / "atlas_01_initial.eml")
     base = ["ingest-file", eml, "--project", "atlas", "--config", str(config)]
@@ -57,7 +57,7 @@ def test_routing_review_and_conflict_commands(tmp_path, monkeypatch):
         "      - id: atlas\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(emailctx.llm, "AnthropicLLM", lambda settings: RecordedLLM(
+    monkeypatch.setattr(emailctx.llm, "make_llm", lambda settings: RecordedLLM(
         {"gate": [{"has_change": False}] * 5}
     ))
     runner = CliRunner()

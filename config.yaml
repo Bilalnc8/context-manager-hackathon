@@ -27,7 +27,7 @@ google:
   # creates itself, nothing else in your Drive. Any other scope is refused.
   scopes:
     - https://www.googleapis.com/auth/gmail.readonly
-    - https://www.googleapis.com/auth/drive.file
+    # - https://www.googleapis.com/auth/drive.file   # re-enable with output.drive.enabled
   # The refresh token is kept in the OS keyring (Windows Credential Manager, macOS
   # Keychain, Secret Service), never in a file or in logs.
 
@@ -44,10 +44,17 @@ bootstrap:
   days: 100
   max_per_company: 500
 
+# LLM provider: anthropic (needs ANTHROPIC_API_KEY) or gemini (needs GEMINI_API_KEY).
+# Model names below must belong to the chosen provider.
+provider: gemini
+
 models:
-  gate: claude-haiku-5-5      # cheap relevance check
-  extract: claude-opus-5-5    # JSON ops
-  judge: claude-haiku-5-5     # reword / duplicate check
+  # Tested 2026-11-22: the -preview names are gone (404); 3.7/3.8-flash returned 503
+  # (overloaded) and gemini-4-* 429 (no quota on this key).
+  gate: gemini-3.5-flash-lite      # cheap relevance check
+  extract: gemini-3.6-flash        # JSON ops
+  judge: gemini-3.5-flash-lite     # reword / duplicate check
+  # Anthropic: gate/judge claude-haiku-5-5, extract claude-opus-5-5
 
 effort:
   gate: low

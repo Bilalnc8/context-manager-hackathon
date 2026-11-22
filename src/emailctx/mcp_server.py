@@ -357,8 +357,21 @@ def build_server(
     return server
 
 
-def run(runtime_factory: Callable[[], Runtime], transport: str = "stdio", **kwargs) -> None:
-    server = build_server(runtime_factory)
+def run(
+    runtime_factory: Callable[[], Runtime],
+    transport: str = "stdio",
+    *,
+    auth_provider=None,
+    auth_kwargs: dict | None = None,
+    **kwargs,
+) -> None:
+    """auth_provider / auth_kwargs come from emailctx.oauth.setup_google_auth; without
+    them the server needs no login (the local demo default)."""
+    server = build_server(runtime_factory, **(auth_kwargs or {}))
+    if auth_provider is not None:
+        from emailctx.oauth import install_callback_route
+
+        install_callback_route(server, auth_provider)
     if transport == "stdio":
         server.run("stdio")
     else:

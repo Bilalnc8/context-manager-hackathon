@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import deque
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -67,6 +68,67 @@ class AnthropicLLM:
         if parsed is None:
             raise LLMError(f"{task}: no parsed output")
         return parsed
+
+
+class GeminiLLM:
+    """Structured-output calls through the Google Gen AI SDK. Models come from config.
+
+    Reads the key from GEMINI_API_KEY (or GOOGLE_API_KEY). Effort maps to Gemini's
+    thinking level; `fallbacks` is Anthropic-only and ignored here.
+    """
+
+    _THINKING = {"low": "low", "medium": "high", "high": "high", "xhigh": "high", "max": "high"}
+
+    def __init__(self, settings: Settings, client: Any | None = None) -> None:
+        self._settings = settings
+        self._client = client
+        if client is None:
+            from google import genai
+
+            if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+                self._client = genai.Client()
+
+    def structured(self, task: Task, system: str, prompt: str, schema: type[M]) -> M:
+        from google.genai import errors, types
+
+        if self._client is None:
+            raise LLMError(f"{task}: no Gemini API key: set GEMINI_API_KEY")
+        s = self._settings
+        config = types.GenerateContentConfig(
+            system_instruction=system,
+            max_output_tokens=s.max_tokens.for_task(task),
+            response_mime_type="application/json",
+            response_json_schema=schema.model_json_schema(),
+            thinking_config=types.ThinkingConfig(
+                thinking_level=self._THINKING[s.effort.for_task(task)]
+            ),
+        )
+        try:
+            response = self._client.models.generate_content(
+                model=s.models.for_task(task), contents=prompt, config=config
+            )
+        except errors.APIError as e:
+            raise LLMError(f"{task}: API error: {e}") from e
+
+        candidate = (response.candidates or [None])[0]
+        reason = getattr(getattr(candidate, "finish_reason", None), "name", None)
+        if reason == "MAX_TOKENS":
+            raise LLMError(f"{task}: hit max_tokens")
+        if reason in {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION"}:
+            raise LLMError(f"{task}: model refused ({reason})")
+        if not response.text:
+            raise LLMError(f"{task}: no output")
+        try:
+            return schema.model_validate_json(response.text)
+        except ValueError as e:
+            raise LLMError(f"{task}: output did not match schema: {e}") from e
+
+
+def make_llm(settings: Settings) -> LLMClient:
+    """The live client for `settings.provider`."""
+    if settings.provider == "gemini":
+        return GeminiLLM(settings)
+    return AnthropicLLM(settings)
 
 
 class RecordedLLM:

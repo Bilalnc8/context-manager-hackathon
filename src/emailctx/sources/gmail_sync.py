@@ -49,6 +49,7 @@ class SyncReport:
     known: int = 0  # already processed: not downloaded
     not_matching: int = 0  # new mail outside the query
     skipped_labels: int = 0  # drafts, spam, trash
+    gone: int = 0  # listed in history, then deleted before we fetched it (e.g. a draft)
     results: list[tuple[str, IngestResult]] = field(default_factory=list)  # (gmail id, result)
     history_id: str | None = None
     bootstraps: list[Any] = field(default_factory=list)  # BootstrapReport per new company
@@ -169,7 +170,15 @@ class GmailSync:
         if self._already_processed(gmail_id):
             report.known += 1
             return
-        raw, meta = fetch_raw(self.service, gmail_id)
+        try:
+            raw, meta = fetch_raw(self.service, gmail_id)
+        except Exception as e:
+            # Deleted since history listed it (drafts are replaced on every save). It will
+            # never come back, so skip it: stopping here would block the sync forever.
+            if _http_status(e) == 404:
+                report.gone += 1
+                return
+            raise
         if SKIP_LABELS & set(meta.get("labelIds", [])):
             report.skipped_labels += 1
             return

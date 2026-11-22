@@ -143,6 +143,10 @@ class _GmailMessages:
     def get(self, userId, id, format):
         g = self.g
         g.calls["get"] += 1
+        if id not in g.store:  # deleted (e.g. a draft that was replaced or sent)
+            def gone():
+                raise HttpError(httplib2.Response({"status": 404}), b'{"error": "notFound"}')
+            return _Req(gone)
         m = g.store[id]
         raw = base64.urlsafe_b64encode(m["raw"]).decode().rstrip("=")
         return _Req(lambda: {"id": id, "raw": raw, "labelIds": m["labelIds"],

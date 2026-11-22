@@ -9,6 +9,7 @@ description = "Route emails to projects and maintain one cited requirements file
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.70",
+    "google-genai>=1.51",
     "pydantic>=2.6",
     "sqlalchemy>=2.0",
     "jinja2>=3.1",

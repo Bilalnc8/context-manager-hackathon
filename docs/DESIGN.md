@@ -321,7 +321,7 @@ There are two separate Google setups. They can share one Google Cloud project, a
 | OAuth client type | Desktop app (`client_secret.json`) | Web application |
 | Scopes | `gmail.readonly` | `openid`, `email` |
 | Who signs in | The shared inbox, once, with `emailctx auth` | Every teammate, on first connect from Claude |
-| Status | Built | Not built yet (spec below) |
+| Status | Built | Built: `emailctx serve --auth google` (`src/emailctx/oauth.py`) |
 | In production | Replaced by email forwarding to `/inbound` (not built yet) | Still needed |
 
 ### 1. Inbox reading: set up `emailctx auth` (built)
@@ -343,7 +343,9 @@ Things to know:
 - Test emails sent from a `@gmail.com` address can't be matched to a client by domain. List that exact address under the company's `contacts` in `registry.yaml`, or the emails go to the review queue.
 - The first poll reads at most `gmail.backfill_max` (200) of the most recent matching emails. After that, only new mail.
 
-### 2. MCP server user login (to build)
+### 2. MCP server user login (built)
+
+Run it: create the Web application client below, put its ID and secret plus `EMAILCTX_ALLOWED_EMAILS` (exact addresses, needed for personal Gmail) and/or `EMAILCTX_ALLOWED_DOMAINS` in `.env` next to `config.yaml`, then `emailctx serve --auth google`. Tests: `tests/test_oauth.py`. The design notes below are kept as the reference.
 
 **Goal.** Claude Code, Claude Desktop or claude.ai connects to `emailctx serve`, the user signs in with Google once in a browser, and only accounts from allowed domains get in. Every write then records the user's email instead of `agent`.
 

@@ -1,0 +1,31 @@
+# Test clients from dummy_data/. Load with: emailctx registry load registry.yaml
+#
+# Test mail is sent from personal @gmail.com addresses (bilalnc8@, gillgurinder485@),
+# which say nothing about the client. Each email is routed by a keyword in its
+# subject instead, e.g. "Acme: pilot date moved". No keyword -> review queue.
+own_domains: [contextlab.example]
+companies:
+  - id: acme
+    name: Acme
+    domains: [acme.example]
+    projects:
+      - id: acme
+        name: Acme Customer Portal
+        description: Customer portal with login, invoice history and support requests
+        keywords: [Acme]
+  - id: nova
+    name: Nova
+    domains: [nova.example]
+    projects:
+      - id: nova
+        name: Nova Inventory Sync
+        description: Inventory sync
+        keywords: [Nova]
+  - id: orion
+    name: Orion
+    domains: [orion.example]
+    projects:
+      - id: orion
+        name: Orion Analytics Dashboard
+        description: Analytics dashboard with regional permissions
+        keywords: [Orion]

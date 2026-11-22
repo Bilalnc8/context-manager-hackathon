@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Annotated, Optional
+from urllib.parse import urlparse
 
 import typer
 
@@ -42,7 +44,7 @@ def _runtime(settings: Settings, *, llm: bool = True):
     """Sessions, the LLM client and, when Drive output is on, the signed-in Drive store."""
     from emailctx.auth import AuthError
     from emailctx.ingest import Runtime
-    from emailctx.llm import AnthropicLLM
+    from emailctx.llm import make_llm
 
     sessions = make_sessionmaker(make_engine(settings.db_path))
     drive = None
@@ -52,7 +54,7 @@ def _runtime(settings: Settings, *, llm: bool = True):
         except AuthError as e:
             typer.secho(f"error: {e} (Drive output is on)", fg="red")
             raise typer.Exit(2) from e
-    return Runtime(settings, sessions, AnthropicLLM(settings) if llm else None, drive=drive)  # type: ignore[arg-type]
+    return Runtime(settings, sessions, make_llm(settings) if llm else None, drive=drive)  # type: ignore[arg-type]
 
 
 def _print_result(result) -> None:
@@ -198,7 +200,7 @@ def _server_runtime(settings: Settings):
     """Runtime for the MCP server. Built on the first tool call, never exits the process."""
     from emailctx.auth import AuthError
     from emailctx.ingest import Runtime
-    from emailctx.llm import AnthropicLLM
+    from emailctx.llm import make_llm
 
     sessions = make_sessionmaker(make_engine(settings.db_path))
     drive = None
@@ -209,7 +211,7 @@ def _server_runtime(settings: Settings):
             raise RuntimeError(
                 f"{e}. Drive output is on in the server's config: sign in, or set output.drive.enabled: false"
             ) from e
-    return Runtime(settings, sessions, AnthropicLLM(settings), drive=drive)
+    return Runtime(settings, sessions, make_llm(settings), drive=drive)
 
 
 @app.command("mcp")
@@ -243,6 +245,15 @@ def serve_cmd(
             "Needs `emailctx auth` on this machine, signed in as the shared inbox.",
         ),
     ] = None,
+    auth: Annotated[
+        str,
+        typer.Option(
+            "--auth",
+            help="'google': users sign in with Google when Claude connects (needs "
+            "EMAILCTX_GOOGLE_CLIENT_ID/SECRET and EMAILCTX_ALLOWED_EMAILS or _DOMAINS, "
+            "in the environment or .env next to config.yaml). 'none': no login.",
+        ),
+    ] = "none",
     config: ConfigOpt = None,
 ) -> None:
     """Run the MCP server over HTTP so the whole team's Claude sessions can connect.
@@ -258,7 +269,26 @@ def serve_cmd(
 
     from emailctx.mcp_server import run
 
+    if auth not in ("none", "google"):
+        typer.secho("error: --auth must be 'none' or 'google'", fg="red")
+        raise typer.Exit(2)
     settings = load_settings(config)
+    auth_args: dict = {}
+    if auth == "google":
+        from emailctx.oauth import GoogleOAuthConfig, OAuthConfigError, setup_google_auth
+
+        config_file = config or Path(os.environ.get("EMAILCTX_CONFIG") or "config.yaml")
+        try:
+            cfg = GoogleOAuthConfig.from_env(config_file.resolve().parent / ".env")
+        except OAuthConfigError as e:
+            typer.secho(f"error: {e}", fg="red")
+            raise typer.Exit(2) from e
+        provider, kwargs = setup_google_auth(cfg, make_sessionmaker(make_engine(settings.db_path)))
+        auth_args = {"auth_provider": provider, "auth_kwargs": kwargs}
+        who = ", ".join(cfg.allowed_emails + [f"*@{d}" for d in cfg.allowed_domains])
+        typer.echo(f"[auth] Google sign-in required; allowed: {who}", err=True)
+        if urlparse(cfg.public_url).port not in (None, port):
+            typer.secho(f"warning: EMAILCTX_PUBLIC_URL {cfg.public_url} doesn't use port {port}", fg="yellow")
     made: dict = {}
     made_lock = threading.Lock()
 
@@ -279,7 +309,7 @@ def serve_cmd(
         allowed_origins=[f"http://{h}" for h in local] + [f"https://{h}" for h in extra],
     )
     typer.echo(f"emailctx MCP server on http://{host}:{port}/mcp (database {settings.db_path})", err=True)
-    run(runtime, transport="http", host=host, port=port, transport_security=security)
+    run(runtime, transport="http", host=host, port=port, transport_security=security, **auth_args)
 
 
 def _start_gmail_poller(settings: Settings, runtime, minutes: float) -> None:

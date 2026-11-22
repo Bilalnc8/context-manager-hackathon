@@ -16,7 +16,8 @@ Requires Python 3.11+.
 py -3.13 -m venv .venv
 .venv\Scripts\pip install -e ".[dev]"
 .venv\Scripts\pytest                      # offline: recorded LLM responses, fake Google
-$env:ANTHROPIC_API_KEY = "sk-ant-..."     # needed to process real client input
+$env:GEMINI_API_KEY = "..."              # needed to process real client input (provider: gemini)
+# or $env:ANTHROPIC_API_KEY = "sk-ant-..." with provider: anthropic in config.yaml
 ```
 
 Everything lives in one SQLite database (`emailctx.db`), which the MCP server reads directly. Each company's file is also written to `companies/<company>/context.md`. Google Drive output is off by default (`output.drive.enabled` in `config.yaml`).
@@ -44,6 +45,8 @@ Then, in any session:
 - "What exactly did the client say about REQ-004?" calls `get_source` with the footnote number.
 
 The server is the only writer, so many people can use it at once. Writes take turns, and each company's file always shows the latest state. For Gmail polling, run `emailctx auth` once on the server machine, signed in as the shared inbox that receives client mail.
+
+To make users sign in with Google first, run `emailctx serve --auth google` (setup: [MCP server user login](docs/DESIGN.md#2-mcp-server-user-login-built)). Every write then records the user's email.
 
 Behind a tunnel (for Claude Desktop or a teammate), run `emailctx serve --allowed-host my-team.ngrok.app`.
 
