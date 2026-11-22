@@ -29,3 +29,10 @@ companies:
         name: Orion Analytics Dashboard
         description: Analytics dashboard with regional permissions
         keywords: [Orion]
+  # Real client: routed by domain. Any mail from/to/cc @gotlineup.com -> Lineup.
+  - id: lineup
+    name: Lineup
+    domains: [gotlineup.com]
+    projects:
+      - id: lineup
+        name: Lineup
